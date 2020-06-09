@@ -7,10 +7,6 @@ class MELD_disp_xfer(om.ExplicitComponent):
     Component to perform displacement transfer using MELD
     """
     def initialize(self):
-        self.options.declare('xfer_object')
-        self.options.declare('struct_ndof')
-        self.options.declare('struct_nnodes')
-        self.options.declare('aero_nnodes')
         self.options.declare('check_partials')
 
         self.options['distributed'] = True
@@ -24,41 +20,32 @@ class MELD_disp_xfer(om.ExplicitComponent):
         self.check_partials = False
 
     def setup(self):
-        self.meld = self.options['xfer_object']
 
-        self.struct_ndof   = self.options['struct_ndof']
-        self.struct_nnodes = self.options['struct_nnodes']
-        self.aero_nnodes   = self.options['aero_nnodes']
         self.check_partials= self.options['check_partials']
 
-        struct_ndof = self.struct_ndof
-        struct_nnodes = self.struct_nnodes
-        aero_nnodes = self.aero_nnodes
+        self.meld = TransferScheme.pyMELD(self.comm,
+                                          self.comm, 0,
+                                          self.comm, 0,
+                                          self.options['isym'],
+                                          self.options['n'],
+                                          self.options['beta'])
 
-        irank = self.comm.rank
 
-        ax_list = self.comm.allgather(aero_nnodes*3)
-        ax1 = np.sum(ax_list[:irank])
-        ax2 = np.sum(ax_list[:irank+1])
-
-        sx_list = self.comm.allgather(struct_nnodes*3)
-        sx1 = np.sum(sx_list[:irank])
-        sx2 = np.sum(sx_list[:irank+1])
-
-        su_list = self.comm.allgather(struct_nnodes*struct_ndof)
-        su1 = np.sum(su_list[:irank])
-        su2 = np.sum(su_list[:irank+1])
 
         # inputs
-        self.add_input('x_s0', shape = struct_nnodes*3,           src_indices = np.arange(sx1, sx2, dtype=int), desc='initial structural node coordinates')
-        self.add_input('x_a0', shape = aero_nnodes*3,             src_indices = np.arange(ax1, ax2, dtype=int), desc='initial aerodynamic surface node coordinates')
-        self.add_input('u_s',  shape = struct_nnodes*struct_ndof, src_indices = np.arange(su1, su2, dtype=int), desc='structural node displacements')
+        self.add_input('x_s0', shape_by_connect = True, src_indices_by_connect = True, desc='initial structural node coordinates')
+        self.add_input('x_a0', shape_by_connect = True, src_indices_by_connect = True, desc='initial aerodynamic surface node coordinates')
+        self.add_input('u_s',  determine_shape = True, src_indices_by_connect = True, desc='structural node displacements')
 
         # outputs
-        self.add_output('u_a', shape = aero_nnodes*3, val=np.zeros(aero_nnodes*3), desc='aerodynamic surface displacements')
+        self.add_output('u_a', determine_shape = True, desc='aerodynamic surface displacements')
 
-        # partials
-        #self.declare_partials('u_a',['x_s0','x_a0','u_s'])
+    def determine_shape(self, var_meta_data):
+
+        self.set_variable_shape('u_s', (var_meta_data['x_s0'].size//3))
+    
+        self.set_variable_shape('u_a', (var_meta_data['x_a0'].shape))
+    
 
     def compute(self, inputs, outputs):
         x_s0 = np.array(inputs['x_s0'],dtype=TransferScheme.dtype)
@@ -136,10 +123,8 @@ class MELD_load_xfer(om.ExplicitComponent):
     Component to perform load transfers using MELD
     """
     def initialize(self):
-        self.options.declare('xfer_object')
         self.options.declare('struct_ndof')
-        self.options.declare('struct_nnodes')
-        self.options.declare('aero_nnodes')
+
         self.options.declare('check_partials')
 
         self.options['distributed'] = True
@@ -148,45 +133,37 @@ class MELD_load_xfer(om.ExplicitComponent):
         self.initialized_meld = False
 
         self.struct_ndof = None
-        self.struct_nnodes = None
-        self.aero_nnodes = None
+
         self.check_partials = False
 
     def setup(self):
         # get the transfer scheme object
         self.meld = self.options['xfer_object']
 
-        self.struct_ndof   = self.options['struct_ndof']
-        self.struct_nnodes = self.options['struct_nnodes']
-        self.aero_nnodes   = self.options['aero_nnodes']
         self.check_partials= self.options['check_partials']
 
-        struct_ndof = self.struct_ndof
-        struct_nnodes = self.struct_nnodes
-        aero_nnodes = self.aero_nnodes
+        self.meld = TransferScheme.pyMELD(self.comm,
+                                          self.comm, 0,
+                                          self.comm, 0,
+                                          self.options['isym'],
+                                          self.options['n'],
+                                          self.options['beta'])
 
-        irank = self.comm.rank
-
-        ax_list = self.comm.allgather(aero_nnodes*3)
-        ax1 = np.sum(ax_list[:irank])
-        ax2 = np.sum(ax_list[:irank+1])
-
-        sx_list = self.comm.allgather(struct_nnodes*3)
-        sx1 = np.sum(sx_list[:irank])
-        sx2 = np.sum(sx_list[:irank+1])
-
-        su_list = self.comm.allgather(struct_nnodes*struct_ndof)
-        su1 = np.sum(su_list[:irank])
-        su2 = np.sum(su_list[:irank+1])
 
         # inputs
-        self.add_input('x_s0', shape = struct_nnodes*3,           src_indices = np.arange(sx1, sx2, dtype=int), desc='initial structural node coordinates')
-        self.add_input('x_a0', shape = aero_nnodes*3,             src_indices = np.arange(ax1, ax2, dtype=int), desc='initial aerodynamic surface node coordinates')
-        self.add_input('u_s',  shape = struct_nnodes*struct_ndof, src_indices = np.arange(su1, su2, dtype=int), desc='structural node displacements')
-        self.add_input('f_a',  shape = aero_nnodes*3,             src_indices = np.arange(ax1, ax2, dtype=int), desc='aerodynamic force vector')
+        self.add_input('x_s0', shape_by_connect = True, src_indices_by_connect = True, desc='initial structural node coordinates')
+        self.add_input('x_a0', shape_by_connect = True, src_indices_by_connect = True, desc='initial aerodynamic surface node coordinates')
+        self.add_input('u_s',  determine_shape = True, src_indices_by_connect = True, desc='structural node displacements')
+        self.add_input('f_a',  determine_shape = True, src_indices_by_connect = True, desc='aerodynamic force vector')
 
         # outputs
-        self.add_output('f_s', shape = struct_nnodes*struct_ndof, desc='structural force vector')
+        self.add_output('f_s', determine_shape = True, desc='structural force vector')
+
+    def determine_shape(self, var_meta_data):
+
+        self.set_variable_shape(['u_s', 'f_s'], (var_meta_data['x_s0'].size//3*self.struct_ndof))
+        self.set_variable_shape(['f_a'], var_meta_data['x_a0'].shape)
+    
 
         # partials
         #self.declare_partials('f_s',['x_s0','x_a0','u_s','f_a'])
@@ -289,53 +266,3 @@ class MELD_load_xfer(om.ExplicitComponent):
                     prod = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
                     self.meld.applydLdxS0(d_out,prod)
                     d_inputs['x_s0'] -= np.array(prod,dtype=float)
-
-class MELD_builder(object):
-
-    def __init__(self, options, aero_builder, struct_builder,check_partials=False):
-        self.options=options
-        self.check_partials = check_partials
-        # TODO we can move the aero and struct builder to init_xfer_object call so that user does not need to worry about this
-        self.aero_builder = aero_builder
-        self.struct_builder = struct_builder
-
-    # api level method for all builders
-    def init_xfer_object(self, comm):
-        # create the transfer
-        self.xfer_object = TransferScheme.pyMELD(comm,
-                                                 comm, 0,
-                                                 comm, 0,
-                                                 self.options['isym'],
-                                                 self.options['n'],
-                                                 self.options['beta'])
-
-        # TODO also do the necessary calls to the struct and aero builders to fully initialize MELD
-        # for now, just save the counts
-        self.struct_ndof = self.struct_builder.get_ndof()
-        self.struct_nnodes = self.struct_builder.get_nnodes()
-        self.aero_nnodes = self.aero_builder.get_nnodes()
-
-    # api level method for all builders
-    def get_xfer_object(self):
-        return self.xfer_object
-
-    # api level method for all builders
-    def get_element(self):
-
-        disp_xfer = MELD_disp_xfer(
-            xfer_object=self.xfer_object,
-            struct_ndof=self.struct_ndof,
-            struct_nnodes=self.struct_nnodes,
-            aero_nnodes=self.aero_nnodes,
-            check_partials=self.check_partials
-        )
-
-        load_xfer = MELD_load_xfer(
-            xfer_object=self.xfer_object,
-            struct_ndof=self.struct_ndof,
-            struct_nnodes=self.struct_nnodes,
-            aero_nnodes=self.aero_nnodes,
-            check_partials=self.check_partials
-        )
-
-        return disp_xfer, load_xfer

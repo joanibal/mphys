@@ -120,33 +120,21 @@ class TacsSolver(om.ImplicitComponent):
         self.psi_s      = tacs.createVec()
         self.xpt_sens   = tacs.createNodeVec()
 
-        # OpenMDAO setup
-
-        state_size = self.ans.getArray().size
-        node_size  = self.xpt_sens.getArray().size
-        self.ndof = int(state_size/(node_size/3))
-
-        s_list = self.comm.allgather(state_size)
-        n_list = self.comm.allgather(node_size)
-        irank  = self.comm.rank
-
-        s1 = np.sum(s_list[:irank])
-        s2 = np.sum(s_list[:irank+1])
-        n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
-
-
         # inputs
-        self.add_input('dv_struct', shape=ndv, desc='tacs design variables')
-        self.add_input('x_s0', shape=node_size , src_indices=np.arange(n1, n2, dtype=int), desc='structural node coordinates')
-        self.add_input('f_s', shape=state_size, src_indices=np.arange(s1, s2, dtype=int), desc='structural load vector')
+        self.add_input('dv_struct', shape_by_connection = True, desc='tacs design variables')
+        self.add_input('x_s0', shape_by_connection = True, desc='structural node coordinates')
+        self.add_input('f_s', determine_shape=True,  desc='structural load vector')
 
         # outputs
         # its important that we set this to zero since this displacement value is used for the first iteration of the aero
-        self.add_output('u_s', shape=state_size, val = np.zeros(state_size),desc='structural state vector')
+        self.add_output('u_s', determine_shape=True, desc='structural state vector')
 
         # partials
         #self.declare_partials('u_s',['dv_struct','x_s0','f_s'])
+
+    def determine_shape(self, inputs, outputs):
+        self.set_variable_shape(['f_s', 'u_s'], (inputs['x_a0'].size//3*self.solver_dict['ndof']))
+
 
     def get_ndof(self):
         return self.solver_dict['ndof']
@@ -227,11 +215,7 @@ class TacsSolver(om.ImplicitComponent):
         # Apply BCs to the residual (forces)
         tacs.applyBCs(res)
 
-        residuals['u_s'][:] = res_array[:]
-
-        
-
-
+        residuals['u_s'][:] = res_array[:]     
 
     def solve_nonlinear(self, inputs, outputs):
         tacs   = self.tacs
@@ -567,26 +551,12 @@ class TacsFunctions(om.ExplicitComponent):
         self.ndv       = ndv
         self.func_list = func_list
 
-        self.ans = tacs.createVec()
-        state_size = self.ans.getArray().size
 
-        self.xpt_sens = tacs.createNodeVec()
-        node_size = self.xpt_sens.getArray().size
+        # inputs
+        self.add_input('dv_struct', shape_by_connection = True, desc='tacs design variables')
+        self.add_input('x_s0', shape_by_connection = True, desc='structural node coordinates')
+        self.add_input('u_s', determine_shape=True,  desc='structural state vector')
 
-        s_list = self.comm.allgather(state_size)
-        n_list = self.comm.allgather(node_size)
-        irank  = self.comm.rank
-
-        s1 = np.sum(s_list[:irank])
-        s2 = np.sum(s_list[:irank+1])
-        n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
-
-        # OpenMDAO part of setup
-        # TODO move the dv_struct to an external call where we add the DVs
-        self.add_input('dv_struct', shape=ndv,                                                    desc='tacs design variables')
-        self.add_input('x_s0',      shape=node_size,  src_indices=np.arange(n1, n2, dtype=int),   desc='structural node coordinates')
-        self.add_input('u_s',       shape=state_size, src_indices=np.arange(s1, s2, dtype=int),   desc='structural state vector')
 
         # Remove the mass function from the func list if it is there
         # since it is not dependent on the structural state
@@ -601,6 +571,9 @@ class TacsFunctions(om.ExplicitComponent):
 
             # declare the partials
             #self.declare_partials('f_struct',['dv_struct','x_s0','u_s'])
+
+    def determine_shape(self, inputs, outputs):
+        self.set_variable_shape(['u_s'], (inputs['x_a0'].size//3*self.solver_objects[3]['ndof']))
 
     def _update_internal(self,inputs):
         self.tacs.setDesignVars(np.array(inputs['dv_struct'],dtype=TACS.dtype))
@@ -680,6 +653,8 @@ class TacsFunctions(om.ExplicitComponent):
                         prod_array = prod.getArray()
 
                         d_inputs['u_s'][:] += np.array(prod_array,dtype=float) * d_outputs['f_struct'][ifunc]
+
+                        
 class TacsMass(om.ExplicitComponent):
     """
     Component to compute TACS mass
@@ -712,20 +687,11 @@ class TacsMass(om.ExplicitComponent):
 
         # TACS part of setup
         self.tacs = tacs
-        ndv  = self.struct_objects[3]['ndv']
-
         self.xpt_sens = tacs.createNodeVec()
-        node_size = self.xpt_sens.getArray().size
 
-        n_list = self.comm.allgather(node_size)
-        irank  = self.comm.rank
-
-        n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
-
-        # OpenMDAO part of setup
-        self.add_input('dv_struct', shape=ndv,                                                    desc='tacs design variables')
-        self.add_input('x_s0',      shape=node_size,  src_indices=np.arange(n1, n2, dtype=int),   desc='structural node coordinates')
+        # inputs
+        self.add_input('dv_struct', shape_by_connection = True, desc='tacs design variables')
+        self.add_input('x_s0', shape_by_connection = True, desc='structural node coordinates')
 
         self.add_output('mass', 0.0, desc = 'structural mass')
         #self.declare_partials('mass',['dv_struct','x_s0'])
@@ -786,41 +752,24 @@ class PrescribedLoad(om.ExplicitComponent):
     def initialize(self):
         self.options.declare('load_function', default = None, desc='function that prescribes the loads')
         self.options.declare('tacs')
+        self.options.declare('ndof')
 
         self.options['distributed'] = True
 
-        self.ndof = 0
 
     def setup(self):
 #        self.set_check_partial_options(wrt='*',directional=True)
 
-        # TACS assembler setup
-        tacs = self.options['tacs']
-
-        # create some TACS vectors so we can see what size they are
-        # TODO getting the node sizes should be easier than this...
-        xpts  = tacs.createNodeVec()
-        node_size = xpts.getArray().size
-
-        tmp   = tacs.createVec()
-        state_size = tmp.getArray().size
-        self.ndof = int(state_size / ( node_size / 3 ))
-
-        irank = self.comm.rank
-
-        n_list = self.comm.allgather(node_size)
-        n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
-
         # OpenMDAO setup
-        self.add_input('x_s0', shape=node_size, src_indices=np.arange(n1, n2, dtype=int), desc='structural node coordinates')
-        self.add_output('f_s', shape=state_size, desc='structural load')
+        self.add_input('x_s0', shape_by_connect = True, src_indices_by_connect = True, desc='structural node coordinates')
+        self.add_output('f_s', determine_shape = True, desc='structural load')
 
-        #self.declare_partials('f_s','x_s0')
+    def determine_shape(self, inputs, outputs):
+        self.set_variable_shape('f_s', (inputs['x_s0'].size//3 * self.options['ndof']))
 
     def compute(self,inputs,outputs):
         load_function = self.options['load_function']
-        outputs['f_s'] = load_function(inputs['x_s0'],self.ndof)
+        outputs['f_s'] = load_function(inputs['x_s0'],self.options['ndof'])
 
 class TACS_group(om.Group):
     def initialize(self):
@@ -968,5 +917,4 @@ class TACS_builder(Builder):
     def get_component(self, **kwargs):
         yield '_mesh', TacsMesh(struct_solver=self.solver, surface_nodes=self.solver_dict['surface_nodes'])
         yield '', TACS_group(solver=self.solver, solver_objects=self.solver_objects, check_partials=self.check_partials, conduction=self.conduction, **kwargs)
-        # yield 'hi', 0
 
