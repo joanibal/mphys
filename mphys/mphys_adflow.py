@@ -80,7 +80,7 @@ class Geo_Disp(ExplicitComponent):
         self.add_output('x_a',determine_shape = True, desc='deformed aerodynamic surface')
 
     def determine_shape(self, var_meta_data):
-        self.set_variable_shape(['x_a', 'u_a'], inputs['x_a0'].shape)
+        self.set_variable_shape(['x_a', 'u_a'], var_meta_data['x_a0'].shape)
 
 
     def compute(self,inputs,outputs):
