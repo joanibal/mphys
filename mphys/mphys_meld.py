@@ -2,11 +2,46 @@ import numpy as np
 import openmdao.api as om
 from funtofem import TransferScheme
 
-from .base_classes import SolverObjectBasedSystem, XferObject
+
+
+from .base_classes import  ObjBuilder, SysBuilder
 
 
 
-class MELD_disp_xfer(om.ExplicitComponent, XferObject):
+class TacsObjs():
+    def __init__(self, mesh, assembler, mat, pc, ksp):
+        self.mesh = mesh
+        self.assembler = assembler
+        self.mat = mat
+        self.pc = pc
+        self.ksp = ksp
+
+
+class TacsObjsBuilder(ObjBuilder):
+    def __init__(self):
+        super().__init__(TacsObjs)
+
+    def build_obj(self, comm):
+
+        meld_therm = TransferScheme.pyMELD(comm,
+                                           comm, 0,
+                                           comm, 0,
+                                           self.options['isym'],
+                                           self.options['n'],
+                                           self.options['beta'])
+
+
+        return TacsObjs(mesh, assembler, mat, pc, ksp)
+        #TODO add this code to an meld component base class
+        if self.solver_objects['Meld'] == None:
+            self.solver_objects['Meld'] = 
+        self.solvers_init = True
+
+
+
+
+
+class MELD_disp_xfer(om.ExplicitComponent):
     """
     Component to perform displacement transfer using MELD
     """
@@ -160,7 +195,7 @@ class MELD_disp_xfer(om.ExplicitComponent, XferObject):
                     d_inputs['x_s0'] -= np.array(prod,dtype=float)
 
 
-class MELD_load_xfer(om.ExplicitComponent, XferObject):
+class MELD_load_xfer(om.ExplicitComponent):
     """
     Component to perform load transfers using MELD
     """
@@ -343,4 +378,160 @@ class MELD_load_xfer(om.ExplicitComponent, XferObject):
                     # df_s/dx_s0^T * psi = - psi^T * dL/dx_s0 in F2F terminology
                     prod = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
                     meld.applydLdxS0(d_out,prod)
+                    d_inputs['x_s0'] -= np.array(prod,dtype=float)
+
+
+
+
+class MELD_heat_xfer_xfer(om.ExplicitComponent):
+    """
+    Component to perform displacement transfer using MELD
+    """
+    def initialize(self):
+        
+        # if pyMeldThermal should be use use set to true
+        self.options.declare('solver_options')
+        self.options.declare('check_partials', default=False)
+
+        self.options['distributed'] = True
+
+        self.solvers_init = False
+
+        self.initialized_meld = False
+
+        self.check_partials = False
+
+        self.solver_objects = {'Meld': None}
+
+    def setup(self):
+ 
+        if not self.solvers_init:
+            self.init_solver_objects(self.comm)
+
+
+        # self.struct_ndof   = self.options['struct_ndof']
+        # self.struct_nnodes = self.options['struct_nnodes']
+        # self.aero_nnodes   = self.options['aero_nnodes']
+        self.check_partials= self.options['check_partials']
+
+        # struct_ndof = self.struct_ndof
+        # struct_nnodes = self.struct_nnodes
+        # aero_nnodes = self.aero_nnodes
+
+        # irank = self.comm.rank
+
+        # ax_list = self.comm.allgather(aero_nnodes*3)
+        # ax1 = np.sum(ax_list[:irank])
+        # ax2 = np.sum(ax_list[:irank+1])
+
+        # sx_list = self.comm.allgather(struct_nnodes*3)
+        # sx1 = np.sum(sx_list[:irank])
+        # sx2 = np.sum(sx_list[:irank+1])
+
+        # su_list = self.comm.allgather(struct_nnodes*struct_ndof)
+        # su1 = np.sum(su_list[:irank])
+        # su2 = np.sum(su_list[:irank+1])
+
+        # inputs
+        # # must be done at the configure level because size may not even be defined yet!
+        # self.add_input('x_s0', shape = 0, src_indices = [], desc='initial structural node coordinates') #np.arange(sx1, sx2, dtype=int)
+        # self.add_input('x_a0', shape = 0, src_indices = [], desc='initial aerodynamic surface node coordinates') #np.arange(ax1, ax2, dtype=int)
+        # self.add_input('u_s',  shape = 0, src_indices = [], desc='structural node displacements') #np.arange(su1, su2, dtype=int)
+
+        # # outputs
+        # self.add_output('u_a', shape = 0,  desc='aerodynamic surface displacements')
+
+
+    def init_solver_objects(self, comm):
+        # create the transfer
+        #TODO add this code to an meld component base class
+        if self.solver_objects['Meld'] == None:
+            self.solver_objects['Meld'] = TransferScheme.pyMELD(comm,
+                                                    comm, 0,
+                                                    comm, 0,
+                                                    self.options['solver_options']['isym'],
+                                                    self.options['solver_options']['n'],
+                                                    self.options['solver_options']['beta'])
+
+        self.solvers_init = True
+
+
+    def compute(self, inputs, outputs):
+        meld = self.solver_objects['Meld']
+        x_s0 = np.array(inputs['x_s0'],dtype=TransferScheme.dtype)
+        x_a0 = np.array(inputs['x_a0'],dtype=TransferScheme.dtype)
+        u_a  = np.array(outputs['u_a'],dtype=TransferScheme.dtype)
+
+        if not self.initialized_meld:
+            self.struct_nnodes = x_s0.size//3
+            self.aero_nnodes = x_a0.size//3
+            self.struct_ndof =  inputs['u_s'].size//self.struct_nnodes
+            self.u_s  = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
+        # only the first 3 dof of the structure  (x, y, z) are passed to meld
+        for i in range(3):
+            self.u_s[i::3] = inputs['u_s'][i::self.struct_ndof]
+
+        # import ipdb; ipdb.set_trace()
+        meld.setStructNodes(x_s0)
+        meld.setAeroNodes(x_a0)
+
+        if not self.initialized_meld:
+            meld.initialize()
+            self.initialized_meld = True
+
+        print("disp xfer")
+        meld.transferDisps(self.u_s,u_a)
+
+        outputs['u_a'] = u_a
+
+    def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
+        """
+        The explicit component is defined as:
+            u_a = g(u_s,x_a0,x_s0)
+        The MELD residual is defined as:
+            D = u_a - g(u_s,x_a0,x_s0)
+        So explicit partials below for u_a are negative partials of D
+        """
+        meld = self.solver_objects['Meld']
+        if mode == 'fwd':
+            if 'u_a' in d_outputs:
+                if 'u_s' in d_inputs:
+                    d_in = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
+                    for i in range(3):
+                        d_in[i::3] = d_inputs['u_s'][i::self.struct_ndof]
+                    prod = np.zeros(self.aero_nnodes*3,dtype=TransferScheme.dtype)
+                    meld.applydDduS(d_in,prod)
+                    d_outputs['u_a'] -= np.array(prod,dtype=float)
+
+                if 'x_a0' in d_inputs:
+                    if self.check_partials:
+                        pass
+                    else:
+                        raise ValueError('forward mode requested but not implemented')
+
+                if 'x_s0' in d_inputs:
+                    if self.check_partials:
+                        pass
+                    else:
+                        raise ValueError('forward mode requested but not implemented')
+
+        if mode == 'rev':
+            if 'u_a' in d_outputs:
+                du_a = np.array(d_outputs['u_a'],dtype=TransferScheme.dtype)
+                if 'u_s' in d_inputs:
+                    # du_a/du_s^T * psi = - dD/du_s^T psi
+                    prod = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
+                    meld.applydDduSTrans(du_a,prod)
+                    for i in range(3):
+                        d_inputs['u_s'][i::self.struct_ndof] -= np.array(prod[i::3],dtype=np.float64)
+
+                # du_a/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
+                if 'x_a0' in d_inputs:
+                    prod = np.zeros(d_inputs['x_a0'].size,dtype=TransferScheme.dtype)
+                    meld.applydDdxA0(du_a,prod)
+                    d_inputs['x_a0'] -= np.array(prod,dtype=float)
+
+                if 'x_s0' in d_inputs:
+                    prod = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
+                    meld.applydDdxS0(du_a,prod)
                     d_inputs['x_s0'] -= np.array(prod,dtype=float)

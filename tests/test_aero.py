@@ -1,8 +1,7 @@
 import numpy as np
 
 import openmdao.api as om
-from mphys.mphys_adflow import ADflow_builder
-from mphys.mphys_adflow import ADflowGroup
+from mphys.mphys_adflow import AdflowGroup
 
 from baseclasses import *
 from mpi4py import MPI
@@ -62,7 +61,7 @@ class Top(om.Group):
         )
         ap0.addDV('alpha',value=1.5,name='alpha')
         
-        aero = ADflowGroup(aero_problem = ap0, 
+        aero = AdflowGroup(aero_problem = ap0, 
                            solver_options = aero_options, 
                            group_options = {
                                'mesh': False,
@@ -71,7 +70,6 @@ class Top(om.Group):
 
         # the solver must be created before added the group as a subsystem.
 
-        aero.init_solver_objects(self.comm)
         self.add_subsystem('aero', aero)
 
         # ivc to keep the top level DVs

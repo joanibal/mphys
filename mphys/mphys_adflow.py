@@ -13,9 +13,27 @@ from openmdao.api import Group, ImplicitComponent, ExplicitComponent
 
 from adflow.om_utils import get_dvs_and_cons
 
-from .base_classes import SolverObjectBasedSystem
+from .base_classes import  ObjBuilder, SysBuilder
 from .analysis import Analysis
-class AdflowMesh(ExplicitComponent, SolverObjectBasedSystem):
+
+
+class AdflowObjBuilder(ObjBuilder):
+
+    def __init__(self):
+        super().__init__(ADFLOW)
+
+    def build_obj(self, comm):
+
+        CFDSolver =  ADFLOW(options=self.options, comm=comm)
+        
+        # TODO there should be a sperate set of mesh options passed to USMesh
+        # TODO the user should be able to choose the kind of mesh
+        mesh = USMesh(options=self.options)
+        CFDSolver.setMesh(mesh)
+        return CFDSolver
+
+
+class AdflowMesh(ExplicitComponent):
     """
     Component to get the partitioned initial surface mesh coordinates
 
@@ -23,39 +41,34 @@ class AdflowMesh(ExplicitComponent, SolverObjectBasedSystem):
     def initialize(self):
         self.options.declare('solver_options')
 
+        self.options.declare('family_groups', default=['allWalls'])
+
         self.options['distributed'] = True
 
+        self.objBuilders = [AdflowObjBuilder()]
 
-        self.solver_objects = {'Adflow':None}
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
-        # set the init flag to false
-        self.solvers_init = False
-
-
-    def init_solver_objects(self, comm):
-        options = self.options['solver_options']
-
-        #TODO add this code to an adflow component base class
-        if self.solver_objects['Adflow'] == None:
-            CFDSolver =  ADFLOW(options=self.options['solver_options'], comm=comm)
-            
-            # TODO there should be a sperate set of mesh options passed to USMesh
-            # TODO the user should be able to choose the kind of mesh
-            mesh = USMesh(options=self.options['solver_options'])
-            CFDSolver.setMesh(mesh)
-            self.solver_objects['Adflow'] = CFDSolver
-            self.solvers_init = True
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
 
     def setup(self):
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
 
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
+        self.solver = self.objBuilders[0].obj
 
-        self.x_a0 = self.solver_objects['Adflow'].mesh.getSurfaceCoordinates().flatten(order='C')
 
-        coord_size = self.x_a0.size
+        for famGroup in self.options['family_groups']:
+            
 
-        self.add_output('x_a0', shape=coord_size, desc='initial aerodynamic surface node coordinates')
+            coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order='C')
+            coord_size = coords.size
+
+            self.add_output('Xsurf_%s'%(famGroup), val=coords, desc='initial aerodynamic surface node coordinates for %s'%(famGroup))
+
 
     def mphys_add_coordinate_input(self):
         local_size = self.x_a0.size
@@ -74,7 +87,8 @@ class AdflowMesh(ExplicitComponent, SolverObjectBasedSystem):
         if 'x_a0_points' in inputs:
             outputs['x_a0'] = inputs['x_a0_points']
         else:
-            outputs['x_a0'] = self.x_a0
+            # outputs['x_a0'] = self.x_a0
+            pass
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
         if mode == 'fwd':
@@ -84,7 +98,7 @@ class AdflowMesh(ExplicitComponent, SolverObjectBasedSystem):
             if 'x_a0_points' in d_inputs:
                 d_inputs['x_a0_points'] += d_outputs['x_a0']
 
-class Geo_Disp(ExplicitComponent, SolverObjectBasedSystem):
+class Geo_Disp(ExplicitComponent):
     """
     This component adds the aerodynamic
     displacements to the geometry-changed aerodynamic surface
@@ -97,33 +111,27 @@ class Geo_Disp(ExplicitComponent, SolverObjectBasedSystem):
         self.options['distributed'] = True
 
 
-        self.solver_objects = {'Adflow':None}
+        self.objBuilders = [AdflowObjBuilder()]
+
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
-        # set the init flag to false
-        self.solvers_init = False
-
-
-    def init_solver_objects(self, comm):
-        options = self.options['solver_options']
-
-        #TODO add this code to an adflow component base class
-        if self.solver_objects['Adflow'] == None:
-            CFDSolver =  ADFLOW(options=self.options['solver_options'], comm=comm)
-            
-            # TODO there should be a sperate set of mesh options passed to USMesh
-            # TODO the user should be able to choose the kind of mesh
-            mesh = USMesh(options=self.options['solver_options'])
-            CFDSolver.setMesh(mesh)
-            self.solver_objects['Adflow'] = CFDSolver
-            self.solvers_init = True
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
 
     def setup(self):
+        
 
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
+
+        self.solver = self.objBuilders[0].obj
 
 
-        aero_nnodes = self.solver_objects['Adflow'].getSurfaceCoordinates().size //3
+
+        aero_nnodes = self.solver.getSurfaceCoordinates().size //3
         local_size = aero_nnodes * 3
         n_list = self.comm.allgather(local_size)
         irank  = self.comm.rank
@@ -154,7 +162,7 @@ class Geo_Disp(ExplicitComponent, SolverObjectBasedSystem):
                 if 'u_a' in d_inputs:
                     d_inputs['u_a']  += d_outputs['x_a']
 
-class AdflowWarper(ExplicitComponent, SolverObjectBasedSystem):
+class AdflowWarper(ExplicitComponent):
     """
     OpenMDAO component that wraps the warping.
 
@@ -168,31 +176,27 @@ class AdflowWarper(ExplicitComponent, SolverObjectBasedSystem):
 
         self.solver_objects = {'Adflow':None}
         
-        # set the init flag to false
-        self.solvers_init = False
+        self.objBuilders = [AdflowObjBuilder()]
 
 
-    def init_solver_objects(self, comm):
-        options = self.options['solver_options']
-
-        #TODO add this code to an adflow component base class
-        if self.solver_objects['Adflow'] == None:
-            CFDSolver =  ADFLOW(options=self.options['solver_options'], comm=comm)
-            
-            # TODO there should be a sperate set of mesh options passed to USMesh
-            # TODO the user should be able to choose the kind of mesh
-            mesh = USMesh(options=self.options['solver_options'])
-            CFDSolver.setMesh(mesh)
-            self.solver_objects['Adflow'] = CFDSolver
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
-        self.solvers_init = True
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
 
     def setup(self):
+        
 
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
 
-        self.solver = self.solver_objects['Adflow']
+        self.solver = self.objBuilders[0].obj
+
+
+
+        self.solver = self.solver
         # self.add_output('foo', val=1.0)
         solver = self.solver
 
@@ -241,7 +245,7 @@ class AdflowWarper(ExplicitComponent, SolverObjectBasedSystem):
                     dxS = self.solver.mesh.getdXs()
                     d_inputs['x_a'] += dxS.flatten()
 
-class AdflowSolver(ImplicitComponent, SolverObjectBasedSystem):
+class AdflowSolver(ImplicitComponent):
     """
     OpenMDAO component that wraps the Adflow flow solver
 
@@ -256,36 +260,31 @@ class AdflowSolver(ImplicitComponent, SolverObjectBasedSystem):
         self.options['distributed'] = True
 
 
-        self.solver_objects = {'Adflow':None}
-        
-        # set the init flag to false
-        self.solvers_init = False
-
         # testing flag used for unit-testing to prevent the call to actually solve
         # NOT INTENDED FOR USERS!!! FOR TESTING ONLY
         self._do_solve = True
 
-    def init_solver_objects(self, comm):
-        options = self.options['solver_options']
+        self.objBuilders = [AdflowObjBuilder()]
 
-        #TODO add this code to an adflow component base class
-        if self.solver_objects['Adflow'] == None:
-            CFDSolver =  ADFLOW(options=self.options['solver_options'], comm=comm)
-            
-            # TODO there should be a sperate set of mesh options passed to USMesh
-            # TODO the user should be able to choose the kind of mesh
-            mesh = USMesh(options=self.options['solver_options'])
-            CFDSolver.setMesh(mesh)
-            self.solver_objects['Adflow'] = CFDSolver
 
-        self.solvers_init = True
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
 
     def setup(self):
+        
 
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
 
-        self.solver =self.solver_objects['Adflow']
+        self.solver = self.objBuilders[0].obj
+
+
+
+        self.solver =self.solver
         solver = self.solver
 
         # state inputs and outputs
@@ -314,11 +313,13 @@ class AdflowSolver(ImplicitComponent, SolverObjectBasedSystem):
 
         self.ap.setDesignVars(tmp)
 
+
     def set_ap(self, ap):
         # this is the external function to set the ap to this component
-        self.ap = copy.copy(ap)
+        self.ap = ap
 
         self.ap_vars,_ = get_dvs_and_cons(ap=ap)
+        irank  = self.comm.rank
 
         # parameter inputs
         if self.comm.rank == 0:
@@ -326,9 +327,17 @@ class AdflowSolver(ImplicitComponent, SolverObjectBasedSystem):
         for (args, kwargs) in self.ap_vars:
             name = args[0]
             size = args[1]
-            self.add_input(name, shape=size, units=kwargs['units'])
+
+
+            s_list = self.comm.allgather(size)
+
+            s1 = np.sum(s_list[:irank])
+            s2 = np.sum(s_list[:irank+1])
+
+
+            self.add_input(name, shape=size, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
             if self.comm.rank == 0:
-                print(name)
+                print(irank, name, size, s1, s2)
 
     def _set_states(self, outputs):
         self.solver.setStates(outputs['q'])
@@ -367,7 +376,8 @@ class AdflowSolver(ImplicitComponent, SolverObjectBasedSystem):
             ap.fatalFail = False
 
             solver(ap)
-
+        
+        print(solver.getHeatFluxes(groupName='allIsothermalWalls'))
         outputs['q'] = solver.getStates()
 
 
@@ -433,7 +443,7 @@ class AdflowSolver(ImplicitComponent, SolverObjectBasedSystem):
 
         return True, 0, 0
 
-class AdflowForces(ExplicitComponent, SolverObjectBasedSystem):
+class AdflowForces(ExplicitComponent):
     """
     OpenMDAO component that wraps force integration
 
@@ -448,34 +458,26 @@ class AdflowForces(ExplicitComponent, SolverObjectBasedSystem):
 
         self.options['distributed'] = True
 
+        self.objBuilders = [AdflowObjBuilder()]
 
-        self.solver_objects = {'Adflow':None}
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
-        # set the init flag to false
-        self.solvers_init = False
-
-
-
-    def init_solver_objects(self, comm):
-        options = self.options['solver_options']
-
-        #TODO add this code to an adflow component base class
-        if self.solver_objects['Adflow'] == None:
-            CFDSolver =  ADFLOW(options=self.options['solver_options'], comm=comm)
-            
-            # TODO there should be a sperate set of mesh options passed to USMesh
-            # TODO the user should be able to choose the kind of mesh
-            mesh = USMesh(options=self.options['solver_options'])
-            CFDSolver.setMesh(mesh)
-            self.solver_objects['Adflow'] = CFDSolver
-        self.solvers_init = True
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
 
     def setup(self):
+        
 
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
 
-        self.solver =self.solver_objects['Adflow']
+        self.solver = self.objBuilders[0].obj
+
+
+
 
         solver = self.solver
 
@@ -514,6 +516,7 @@ class AdflowForces(ExplicitComponent, SolverObjectBasedSystem):
         self.ap = ap
 
         self.ap_vars,_ = get_dvs_and_cons(ap=ap)
+        irank  = self.comm.rank
 
         # parameter inputs
         if self.comm.rank == 0:
@@ -521,9 +524,18 @@ class AdflowForces(ExplicitComponent, SolverObjectBasedSystem):
         for (args, kwargs) in self.ap_vars:
             name = args[0]
             size = args[1]
-            self.add_input(name, shape=size, units=kwargs['units'])
+
+
+            s_list = self.comm.allgather(size)
+
+            s1 = np.sum(s_list[:irank])
+            s2 = np.sum(s_list[:irank+1])
+
+
+            self.add_input(name, shape=size, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
             if self.comm.rank == 0:
-                print(name)
+                print(irank, name, size, s1, s2)
+
 
     def _set_states(self, inputs):
         self.solver.setStates(inputs['q'])
@@ -584,6 +596,187 @@ class AdflowForces(ExplicitComponent, SolverObjectBasedSystem):
                     if dv_name in d_inputs:
                         d_inputs[dv_name] += dv_bar.flatten()
 
+
+class AdflowHeatTransfer(ExplicitComponent):
+    """
+    OpenMDAO component that wraps heat transfer integration
+
+    """
+
+    def initialize(self):
+        self.options.declare('solver_options')
+        self.options.declare('aero_problem')
+        #self.options.declare('use_OM_KSP', default=False, types=bool,
+        #    desc="uses OpenMDAO's PestcKSP linear solver with Adflow's preconditioner to solve the adjoint.")
+
+        self.options['distributed'] = True
+
+        self.objBuilders = [AdflowObjBuilder()]
+
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
+
+
+    def setup(self):
+        #self.set_check_partial_options(wrt='*',directional=True)
+
+
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
+                import ipdb; ipdb.set_trace()
+
+        solver = self.solver = self.objBuilders[0].obj
+
+
+
+        local_state_size = solver.getStateSize()
+        local_coord_size = solver.mesh.getSolverGrid().size
+        s_list = self.comm.allgather(local_state_size)
+        n_list = self.comm.allgather(local_coord_size)
+        irank  = self.comm.rank
+
+        s1 = np.sum(s_list[:irank])
+        s2 = np.sum(s_list[:irank+1])
+        n1 = np.sum(n_list[:irank])
+        n2 = np.sum(n_list[:irank+1])
+
+        local_nodes, nCells = solver._getSurfaceSize(solver.allIsothermalWallsGroup)
+        t_list = self.comm.allgather(local_nodes)
+
+        t1 = np.sum(t_list[:irank])
+        t2 = np.sum(t_list[:irank+1])
+
+        self.add_input('x_g', src_indices=np.arange(n1,n2,dtype=int), shape=local_coord_size)
+        self.add_input('q', src_indices=np.arange(s1,s2,dtype=int), shape=local_state_size)
+        # self.add_input('wall_temp',src_indices=np.arange(t1,t2,dtype=int), shape=local_nodes, units='K')
+
+
+        # print('before', local_nodes, nCells)
+        # local_nodes = self.comm.allreduce(local_nodes, op=MPI.SUM)
+        # print('after', local_nodes, nCells)
+        # self.comm.barrier()
+        # self.comm.barrier()
+        # print(solver.getWallTemperature(solver.allWallsGroup))
+        self.add_output('heatflux', val=np.ones(local_nodes)*-499, shape=local_nodes, units='W/m**2')
+
+        #self.declare_partials(of='f_a', wrt='*')
+
+        self.set_ap(self.options['aero_problem'])
+
+
+    def set_ap(self, ap):
+        # this is the external function to set the ap to this component
+        self.ap = ap
+
+        self.ap_vars,_ = get_dvs_and_cons(ap=ap)
+        irank  = self.comm.rank
+
+        # parameter inputs
+        if self.comm.rank == 0:
+            print('adding ap var inputs')
+        for (args, kwargs) in self.ap_vars:
+            name = args[0]
+            size = args[1]
+
+
+            s_list = self.comm.allgather(size)
+
+            s1 = np.sum(s_list[:irank])
+            s2 = np.sum(s_list[:irank+1])
+
+
+            self.add_input(name, shape=size, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
+            if self.comm.rank == 0:
+                print(irank, name, size, s1, s2)
+
+    def _set_ap(self, inputs):
+        tmp = {}
+        for (args, kwargs) in self.ap_vars:
+            name = args[0]
+            tmp[name] = inputs[name]
+
+        self.ap.setDesignVars(tmp)
+
+    def _set_states(self, inputs):
+        self.solver.setStates(inputs['q'])
+
+    def compute(self, inputs, outputs):
+
+        solver = self.solver
+        ap = self.options['aero_problem']
+
+        ## already done by solver
+        self._set_ap(inputs)
+
+        # Set the warped mesh
+        #solver.mesh.setSolverGrid(inputs['x_g'])
+        # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
+        
+        #
+        # self._set_states(inputs)
+
+        outputs['heatflux'] = solver.getHeatFluxes().flatten(order='C')
+        print(outputs['heatflux'])
+        # print()
+
+    def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
+
+        solver = self.solver
+        ap = self.options['aero_problem']
+
+        if mode == 'fwd':
+            if 'heatflux' in d_outputs:
+                xDvDot = {}
+                for var_name in d_inputs:
+                    xDvDot[var_name] = d_inputs[var_name]
+                if 'q' in d_inputs:
+                    wDot = d_inputs['q']
+                else:
+                    wDot = None
+                if 'x_g' in d_inputs:
+                    xVDot = d_inputs['x_g']
+                else:
+                    xVDot = None
+                if not(xVDot is None and wDot is None):
+                    dhfdot = solver.computeJacobianVectorProductFwd(xDvDot=xDvDot,
+                                                                   xVDot=xVDot,
+                                                                   wDot=wDot,
+                                                                   hfDeriv=True)
+                    dhfdot_map = np.zeros((dhfdot.size, 3))
+                    dhfdot_map[:,0] = dhfdot.flatten()
+                    dhfdot_map =  self.solver.mapVector(dhfdot_map, self.solver.allWallsGroup, self.solver.allIsothermalWallsGroup)
+                    dhfdot = dhfdot_map[:,0]
+                    d_outputs['heatflux'] += dhfdot
+
+        elif mode == 'rev':
+            if 'heatflux' in d_outputs:
+                hfBar = d_outputs['heatflux']
+
+                import ipdb; ipdb.set_trace()
+                
+                hfBar_map = np.zeros((hfBar.size, 3))
+                hfBar_map[:,0] = hfBar.flatten()
+                hfBar_map =  self.solver.mapVector(hfBar_map, self.solver.allIsothermalWallsGroup, self.solver.allWallsGroup)
+                hfBar = hfBar_map[:,0]
+                
+                wBar, xVBar, xDVBar = solver.computeJacobianVectorProductBwd(
+                    hfBar=hfBar, wDeriv=True, xVDeriv=True, xDvDeriv=True)
+
+                if 'x_g' in d_inputs:
+                    d_inputs['x_g'] += xVBar
+                if 'q' in d_inputs:
+                    d_inputs['q'] += wBar
+
+                for dv_name, dv_bar in xDVBar.items():
+                    if dv_name in d_inputs:
+                        d_inputs[dv_name] += dv_bar.flatten()
+
+
 FUNCS_UNITS={
     'mdot': 'kg/s',
     'mavgptot': 'Pa',
@@ -611,9 +804,10 @@ FUNCS_UNITS={
     'forcezmomentum': 'N',
     'flowpower': 'W',
     'area':'m**2',
+    'totheatflux':'W/m**2'
 }
 
-class AdflowFunctions(ExplicitComponent, SolverObjectBasedSystem):
+class AdflowFunctions(ExplicitComponent):
 
     def initialize(self):
         self.options.declare('solver_options')
@@ -623,36 +817,30 @@ class AdflowFunctions(ExplicitComponent, SolverObjectBasedSystem):
 
 
 
-        self.solver_objects = {'Adflow':None}
-        
-        # set the init flag to false
-        self.solvers_init = False
-
         # testing flag used for unit-testing to prevent the call to actually solve
         # NOT INTENDED FOR USERS!!! FOR TESTING ONLY
         self._do_solve = True
 
+        self.objBuilders = [AdflowObjBuilder()]
 
-    def init_solver_objects(self, comm):
-        options = self.options['solver_options']
 
-        #TODO add this code to an adflow component base class
-        if self.solver_objects['Adflow'] == None:
-            CFDSolver =  ADFLOW(options=self.options['solver_options'], comm=comm)
-            
-            # TODO there should be a sperate set of mesh options passed to USMesh
-            # TODO the user should be able to choose the kind of mesh
-            mesh = USMesh(options=self.options['solver_options'])
-            CFDSolver.setMesh(mesh)
-            self.solver_objects['Adflow'] = CFDSolver
-            self.solvers_init = True
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
 
     def setup(self):
+        
 
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
 
-        self.solver =self.solver_objects['Adflow']
+        self.solver = self.objBuilders[0].obj
+
+
+
         solver = self.solver
         #self.set_check_partial_options(wrt='*',directional=True)
 
@@ -680,7 +868,7 @@ class AdflowFunctions(ExplicitComponent, SolverObjectBasedSystem):
             tmp[name] = inputs[name][0]
 
         self.ap.setDesignVars(tmp)
-        #self.options['solver'].setAeroProblem(self.options['ap'])
+        #self.options['solver'].setAeroProblem(self.options['aero_problem'])
 
     def set_ap(self, ap):
         # this is the external function to set the ap to this component
@@ -702,7 +890,11 @@ class AdflowFunctions(ExplicitComponent, SolverObjectBasedSystem):
 
             if self.comm.rank == 0:
                 print("adding adflow func as output: {}".format(f_name))
-            self.add_output(f_name, shape=1)
+
+            if f_name in FUNCS_UNITS:
+                self.add_output(f_name, shape=1, units=FUNCS_UNITS[f_name])
+            else:
+                self.add_output(f_name, shape=1)
             #self.add_output(f_name, shape=1, units=units)
 
     def _set_states(self, inputs):
@@ -818,6 +1010,7 @@ class AdflowGroup(Analysis):
             'solver': True,
             'funcs': True,
             'forces': False,
+            'heatxfer':False
         }
         self.group_components = OrderedDict({
             'mesh': AdflowMesh,
@@ -826,6 +1019,7 @@ class AdflowGroup(Analysis):
             'solver': AdflowSolver,
             'funcs': AdflowFunctions,
             'forces': AdflowForces,
+            'heatxfer':AdflowHeatTransfer
         })
 
         # self.solver_objects = {'Adflow':None}
@@ -861,13 +1055,12 @@ class AdflowGroup(Analysis):
         
 
     def setup(self):
+        super().setup()
         # issue conditional connections
         if self.group_options['mesh'] and self.group_options['deformer'] and not self.group_options['geo_disp']:
-            self.connect('x_a0', 'x_a')
+            # import ipdb; ipdb.set_trace()
+            self.connect('Xsurf_allWalls', 'x_a')
 
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
 
-        
 
 

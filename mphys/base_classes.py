@@ -8,6 +8,8 @@ from itertools import product, chain
 from pprint import pprint
 
 
+
+
 class SolverObjectBasedSystem(metaclass=ABCMeta):
     """
         the base class for analysis in MPhys that require a solver object.
@@ -60,8 +62,67 @@ class SolverObjectBasedSystem(metaclass=ABCMeta):
             raise RuntimeError('Solver used before it was initialized or set')
 
 
-class XferObject(SolverObjectBasedSystem):
-    pass
 
 
-   
+
+class ObjBuilder():
+
+    def __init__(self, obj_type):
+        self.obj_type = obj_type
+        self._obj = None
+        self.options = None
+
+    @property
+    def obj(self):
+        # if self.solvers_obj is None:
+        #     print('Solver used before it was initialized or set')
+        #     import ipdb; ipdb.set_trace()
+        #     raise RuntimeError('Solver used before it was initialized or set')
+
+        return self._obj
+
+    @obj.setter
+    def obj(self, obj):
+        # check that the obj is the right type
+        if isinstance(obj, self.obj_type):
+            self._obj = obj 
+        else:
+
+            print('type of obj supplied does not match type expected')
+            import ipdb; ipdb.set_trace()
+            raise RuntimeError('Solver used before it was initialized or set')
+
+
+    def  build_obj(self, comm):
+        """this must be added for all derived types"""
+        
+        raise NotImplementedError
+
+class SysBuilder(object):
+    def __init__(self, mesh_sys=None, sys=None, funcs_sys=None, options=None):
+        self._mesh = mesh_sys
+        self._sys  = sys
+        self._funcs = funcs_sys
+
+        # options is a dictionary of options for the mesh, system, and func system
+        # options = {'mesh': mesh_options, 'sys': sys_options, 'funcs':func options}
+        self.options = options
+
+    @property
+    def mesh(self):
+        # print(**self.options['mesh'])
+        return self._mesh()
+
+    @property
+    def sys(self):
+        return self._sys(**self.options['sys'])
+
+    @property
+    def funcs_sys(self):
+        return self._funcs_sys(**self.options['funcs_sys'])
+
+
+if __name__ == '__main__':
+    builder = SysBuilder(mesh_sys=Group, sys=Group, funcs_sys=Group)
+
+    import ipdb; ipdb.set_trace()

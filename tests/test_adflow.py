@@ -5,7 +5,7 @@ import numpy as np
 from mphys.mphys_adflow import *
 
 
-@unittest.skip('')
+# @unittest.skip('')
 class TestAdflowSubsys(unittest.TestCase):
     N_Procs = 2
 
@@ -163,7 +163,7 @@ class TestAdflowGroup(unittest.TestCase):
 
     def test_group(self):
 
-        self.top.add_subsystem('aero', ADflowGroup(aero_problem = self.ap, 
+        self.top.add_subsystem('aero', AdflowGroup(aero_problem = self.ap, 
                                             solver_options = self.solver_options, 
                                             group_options = {
                                                 'mesh': True,
@@ -177,7 +177,6 @@ class TestAdflowGroup(unittest.TestCase):
         om.n2(prob, show_browser=False, outfile='mphys_test_adflow_group.html')
 
         prob.run_model()
-
 
 if __name__ == '__main__':
     unittest.main()
