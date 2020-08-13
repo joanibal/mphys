@@ -411,98 +411,18 @@ class ConductionNodal(om.ExplicitComponent):
 
     def setup(self):
 
-        # self.solver = self.options['get_solver'](self.comm)
-        # solver = self.solver
-
-
-        # x_a = solver.getSurfaceCoordinates().flatten(order='C')
-
-        # local_coord_size = solver.getSurfaceCoordinates().size
-
-        # n_list = self.comm.allgather(local_coord_size)
-        # irank  = self.comm.rank
-        # n1 = np.sum(n_list[:irank])
-        # n2 = np.sum(n_list[:irank+1])
-        # self.n1 = int(n1)
-        # self.n2 = int(n2)
-
-        # self.add_input('x_a', src_indices=np.arange(n1,n2,dtype=int),shape=local_coord_size, val=x_a)
         self.add_input('x_a', shape_by_conn=True)
         self.add_input('heatflux', shape_by_conn=True , units='W/m**2')
-        self.add_output('T_surf', shape_by_conn=True , units='K')
-
-
-        # Global Design Variable
-
-        # local_nodes, nCells = solver._getSurfaceSize(solver.allIsothermalWallsGroup)
-        # t_list = self.comm.allgather(local_nodes)
-
-        # self.t1 = int(np.sum(t_list[:irank]))
-        # self.t2 = int(np.sum(t_list[:irank+1]))
-
-        # local_heatflux = self.solver.getHeatFluxes()
-        # local_temp = self.solver.getWallTemperature()
-        # # Global Design Variable
-        # # self.add_input('Q', val=np.array([-200]), units='W/m**2')
-        # # self.add_output('T_surf', val=np.array([[273.0 + 163]]) , units='K')
-
-        # # self.add_input('Q', val=local_heatflux, units='W/m**2')
-        # # self.add_output('T_surf', val=local_temp , units='K')
-        # # print('##############################################')
-        # # print(self.comm.rank, local_temp, self.t1, self.t2)
-        # # print('##############################################')
-
-        # # self.add_input('heatflux', src_indices=np.arange(self.t1,self.t2,dtype=int), val=np.array([-500]*local_nodes), units='W/m**2')
-
-        # # solver does not have wall_temp distributed so we need to do som comm
-
-        # # self.add_output('T_surf', val=np.array([273.0 + 163]*local_nodes) , units='K')
-
+        self.add_output('T_surf', copy_shape='heatflux', units='K')
+        
         self.K_Al = 120  # W/(m*K) (thermal conductivity of alluminium )
         self.K_epoxy = 1 # W/(m*K) (thermal conductivity of epoxy )
         self.motor_radius = 0.15645/2 #m 
         self.epoxy_thickness = 1e-4 # m
-        # self.T_mid = 273.0 + 165  # deg kelvin ~220 degs C
-        # print('conduc', t_list)
 
-        # # Determine the number of surface nodes
-        # x_motor, nNodes_motor = self.getMotorNodes(x_a)
-        # x_motor_list = self.comm.allgather(x_motor)
+    def determine_shape(self):
+        self.copy_var_shape('heatflux', 'T_surf')
 
-        # x_motor_global = np.vstack(x_motor_list)
-        # # self.nNodes_motor = nNodes_motor
-        # x_motor_global = np.reshape(x_motor_global, (4, x_motor_global.size//(3*4), 3))
-        # x_blk_avg_global = np.mean(x_motor_global, axis=1)
-
-        # angs = np.arctan2(x_blk_avg_global[:,1], x_blk_avg_global[:,2])
-
-        # # no negative angles pls 
-        # for idx, ang in enumerate(angs):
-        #     if ang < 0:
-        #         angs[idx] += 2*np.pi
-        
-        # sort_idxs = np.argsort(angs)
-
-
-        # # blk_idxs for btm left right top
-        # self.blk_idxs = np.array([sort_idxs[3], sort_idxs[2], sort_idxs[0], sort_idxs[1]])
-        # self.orig_idxs = np.array([np.argwhere(self.blk_idxs==0), 
-        #                            np.argwhere(self.blk_idxs==1), 
-        #                            np.argwhere(self.blk_idxs==2), 
-        #                            np.argwhere(self.blk_idxs==3)]).flatten() 
-        
-
-
-    def getMotorNodes(self, x_a):
-        x_a = np.reshape(x_a, (len(x_a)//3, 3))
-
-        # get just the surface nodes on the motor
-        x_motor  = self.solver.mapVector(x_a, self.solver.allWallsGroup, self.solver.allIsothermalWallsGroup)
-
-        # 4 blocks, nodes per block, 3 directions
-        nNodes_motor = self.comm.allreduce(x_motor.shape[0], op=MPI.SUM)
-
-        return x_motor, nNodes_motor
 
     def getTempInner(self, x_motor):
         """ given a set of motor points calculate the temperature of inner side of the heat sink"""
@@ -546,45 +466,13 @@ class ConductionNodal(om.ExplicitComponent):
         heatflux_local =  np.reshape(inputs['heatflux'], (4, len(inputs['heatflux'])//4))
 
         # 4 blocks, nodes per block, 3 directions
-        x_a = np.reshape(x_a, (len(x_a)//3, 3))
+        x_a = np.reshape(x_a, (x_a.size//3, 3))
 
         x_motor = x_a
 
         
-
-        # # =============== get global variables =====================
-        # # print('here', self.comm.rank)
-        # # self.comm.barrier()
-
-        # x_motor_list = self.comm.allgather(x_motor)
-        # heatflux_list = self.comm.allgather(heatflux_local)
-        # # print(self.comm.rank, x_motor_list)
-        # x_motor_global = np.vstack(x_motor_list)
-        # heatflux_global = np.concatenate(heatflux_list)
-        
-        # # reshape them in nblks ncell ndim
-        # # import ipdb; ipdb.set_trace()
         x_motor_global = np.reshape(x_motor, (4, x_motor.size//(3*4), 3))
-        # heatflux_global = np.reshape(heatflux_global, (4, heatflux_global.size//(4)))
-
-        # # x_motor_global = np.array(x_motor_global[self.blk_idxs])
-        # # heatflux_global = np.array(heatflux_global[self.blk_idxs])
-
-        # # ------------------------ 
-        # R_therm, area_nodes = self.getNodalThermalResistance(x_motor_global)
-        # T_mid = self.getTempInner(x_motor_global)
         
-        # T_surf = T_mid + (heatflux_global*area_nodes)*R_therm
-
-        # # restore T back to it's orginal order 
-        # print(self)
-        # T_surf = T_surf[self.orig_idxs]
-        # # import ipdb; ipdb.set_trace()
-
-        # T_surf =  T_surf.flatten()
-        # outputs['T_surf'] = T_surf[self.t1:self.t2]
-
-
         # ------------------------ 
         R_therm, area_nodes = self.getNodalThermalResistance(x_motor_global)
         
@@ -601,15 +489,8 @@ class ConductionNodal(om.ExplicitComponent):
         self.t1 = int(np.sum(t_list[:irank]))
         self.t2 = int(np.sum(t_list[:irank+1]))
         outputs['T_surf'] = T_surf[self.t1:self.t2]
-        # outputs['T_surf'] = T_surf
+        
 
-        # if self.comm.rank == 0:
-        #     print(T_surf)
-
-        # print('=====================')
-        # print(self.comm.rank, 'T_surf', outputs['T_surf'], self.t1, self.t2)
-        # print('=====================')
-    
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
         # print('yes')
         if mode == 'fwd':
@@ -624,37 +505,28 @@ class ConductionNodal(om.ExplicitComponent):
                 else:
                     d_x_a = np.zeros(x_a.shape)
                 
-                x_a = np.reshape(x_a, (len(x_a)//3, 3))
-                d_x_a = np.reshape(d_x_a, (len(d_x_a)//3, 3))
-                              
-                x_motor  = self.solver.mapVector(x_a, self.solver.allWallsGroup, self.solver.allIsothermalWallsGroup)
-                d_x_motor  = self.solver.mapVector(d_x_a, self.solver.allWallsGroup, self.solver.allIsothermalWallsGroup)
+
+                x_a = np.reshape(x_a, (x_a.size//3, 3))
+                d_x_a = np.reshape(d_x_a, (d_x_a.size//3, 3))
+
+                x_motor = x_a
+                d_x_motor = d_x_a
 
                 if 'heatflux' in d_inputs:
                     d_heatflux_local = d_inputs['heatflux']
                 else:
                     d_heatflux_local = np.zeros((x_motor.shape[0]))
                 # =============== get global variables =====================
-                # self.comm.barrier()
 
-                x_motor_list = self.comm.allgather(x_motor)
-                heatflux_list = self.comm.allgather(heatflux_local)
-                
-                d_x_motor_list = self.comm.allgather(d_x_motor)
-                d_heatflux_list = self.comm.allgather(d_heatflux_local)
-        
-                x_motor_global = np.vstack(x_motor_list)
-                heatflux_global = np.concatenate(heatflux_list)
-                
-                d_x_motor_global = np.vstack(d_x_motor_list)
-                d_heatflux_global = np.concatenate(d_heatflux_list)
-                
-                # reshape them in nblks ncell ndim
-                x_motor_global = np.reshape(x_motor_global, (4, x_motor_global.size//(3*4), 3))
-                heatflux_global = np.reshape(heatflux_global, (4, heatflux_global.size//(4)))
+                x_motor_global = np.reshape(x_motor, (4, x_motor.size//(3*4), 3))
+                d_x_motor_global = np.reshape(d_x_motor, (4, d_x_motor.size//(3*4), 3))
 
-                d_x_motor_global = np.reshape(d_x_motor_global, (4, d_x_motor_global.size//(3*4), 3))
-                d_heatflux_global = np.reshape(d_heatflux_global, (4, d_heatflux_global.size//(4)))
+
+
+
+                heatflux_global = np.reshape(heatflux_local, (4, heatflux_local.size//(4)))
+                d_heatflux_global = np.reshape(d_heatflux_local, (4, d_heatflux_local.size//(4)))
+
 
 
 
@@ -683,24 +555,11 @@ class ConductionNodal(om.ExplicitComponent):
             x_a = inputs['x_a']
             heatflux_local = inputs['heatflux']
 
-            # 4 blocks, nodes per block, 3 directions
-            x_a = np.reshape(x_a, (len(x_a)//3, 3))
+            x_a = np.reshape(x_a, (x_a.size//3, 3))
+            x_motor = x_a
 
-            # get just the surface nodes on the motor
-            x_motor  = self.solver.mapVector(x_a, self.solver.allWallsGroup, self.solver.allIsothermalWallsGroup)
-
-
-            # =============== get global variables =====================
-            # self.comm.barrier()
-            x_motor_list = self.comm.allgather(x_motor)
-            heatflux_list = self.comm.allgather(heatflux_local)
-
-            x_motor_global = np.vstack(x_motor_list)
-            heatflux_global = np.concatenate(heatflux_list)
-
-            # reshape them in nblks ncell ndim
-            x_motor_global = np.reshape(x_motor_global, (4, x_motor_global.size//(3*4), 3))
-            heatflux_global = np.reshape(heatflux_global, (4, heatflux_global.size//(4)))
+            x_motor_global = np.reshape(x_motor, (4, x_motor.size//(3*4), 3))
+            heatflux_global = np.reshape(heatflux_local, (4, heatflux_local.size//(4)))
 
             # ------------------------ 
             R_therm, area_nodes_global = self.getNodalThermalResistance(x_motor_global)
@@ -742,9 +601,9 @@ class ConductionNodal(om.ExplicitComponent):
                                                                         d_R_therm, d_area_nodes_global)
 
 
-                d_x_a  = self.solver.mapVector(d_x_motor_global, self.solver.allIsothermalWallsGroup, self.solver.allWallsGroup)
+                d_x_a  = np.reshape(d_x_motor_global , x_a.shape)
                 if 'x_a' in d_inputs:
-                    d_inputs['x_a'] += d_x_a.flatten(order='C')
+                    d_inputs['x_a'] += d_x_a
                     print(self.comm.rank, 'd_inputs[x_a]', d_x_a, self.t1, self.t2)
                     # import pdb; pdb.set_trace()
                 

@@ -1,0 +1,38 @@
+1 klow bcwallviscous wall
+1 kHigh bcfarfield far
+2 klow bcwallviscous wall
+2 kHigh bcfarfield far
+3 klow bcwallviscous wall
+3 kHigh bcfarfield far
+4 klow bcwallviscous wall
+4 kHigh bcfarfield far
+5 klow bcwallviscous wall
+5 kHigh bcfarfield far
+6 klow bcwallviscous wall
+6 kHigh bcfarfield far
+7 klow bcwallviscous wall
+7 kHigh bcfarfield far
+8 klow bcwallviscous wall
+8 kHigh bcfarfield far
+9 klow bcwallviscous wall
+9 kHigh bcfarfield far
+10 klow bcwallviscous wall
+10 kHigh bcfarfield far
+11 klow bcwallviscousisothermal wall BCDataSet_t bcwallviscousisothermal Dirichlet Temperature 323
+11 kHigh bcfarfield far
+12 klow bcwallviscousisothermal wall BCDataSet_t bcwallviscousisothermal Dirichlet Temperature 323
+12 kHigh bcfarfield far
+13 klow bcwallviscousisothermal wall BCDataSet_t bcwallviscousisothermal Dirichlet Temperature 323
+13 kHigh bcfarfield far
+14 klow bcwallviscousisothermal wall BCDataSet_t bcwallviscousisothermal Dirichlet Temperature 323
+14 kHigh bcfarfield far
+15 klow bcwallviscous wall
+15 kHigh bcfarfield far
+16 klow bcwallviscous wall
+16 kHigh bcfarfield far
+17 klow bcwallviscous wall
+17 kHigh bcfarfield far
+18 klow bcwallviscous wall
+18 kHigh bcfarfield far
+
+

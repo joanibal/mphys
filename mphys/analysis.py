@@ -19,6 +19,7 @@ class Analysis(Group):
         # loop over objbuilders
         for b in self.objBuilders:
             if b.obj is None:
+                print(b)
                 b.obj = b.build_obj(self.comm)
 
         # pass the obj to the builders of sub systems

@@ -31,7 +31,7 @@ class TacsObjsBuilder(ObjBuilder):
         ndof, ndv = self.options['add_elements'](mesh)
         assembler = mesh.createTACS(ndof)
 
-        mat = assembler.createFEMat()
+        mat = assembler.createSchurMat()
 
 
 
@@ -83,8 +83,17 @@ class TacsMesh(om.ExplicitComponent):
         self.assem.getNodes(self.xpts)
 
         # OpenMDAO setup
-        node_size  =     self.xpts.getArray().size
-        self.add_output('x_s0', shape=node_size, desc='structural node coordinates')
+        xpts_arr = self.xpts.getArray().flatten()
+        # node_size  =     xpts_arr.size
+        self.add_output('x_s0', val=xpts_arr, desc='structural node coordinates')
+
+        if 'surface_mapping' in self.options['solver_options']:
+            xpts_surf_arr, self.mapping = self.options['solver_options']['surface_mapping'](xpts_arr)
+            xpts_surf_arr = xpts_surf_arr.flatten()
+
+            self.add_output('x_surf_s0', val=xpts_surf_arr, desc='sub set of structural node coordinates given by mapping')
+
+
 
     def mphys_add_coordinate_input(self):
         local_size  = self.xpts.getArray().size
@@ -102,8 +111,8 @@ class TacsMesh(om.ExplicitComponent):
     def compute(self,inputs,outputs):
         if 'x_s0_points' in inputs:
             outputs['x_s0'] = inputs['x_s0_points']
-        else:
-            outputs['x_s0'] = self.xpts.getArray()
+        # else:
+        #     outputs['x_s0'] = self.xpts.getArray()
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
         if mode == 'fwd':
@@ -162,6 +171,14 @@ class TacsSolver(om.ImplicitComponent):
             if b.obj is None:
                 b.obj = b.build_obj(self.comm)
 
+
+
+        if 'f5_writer' in  self.options['solver_options']:
+            self.f5_writer = self.options['solver_options']['f5_writer']
+        else:
+            self.f5_writer = None
+
+
         # TACS assembler setup
         self.mesh      = self.objBuilders[0].obj.mesh
         self.tacs      = self.objBuilders[0].obj.assembler
@@ -201,17 +218,16 @@ class TacsSolver(om.ImplicitComponent):
 
 
         # inputs
-        self.add_input('dv_struct', shape=self.ndv, desc='tacs design variables')
         self.add_input('x_s0', shape=node_size , src_indices=np.arange(n1, n2, dtype=int), desc='structural node coordinates')
 
         if 'Conduction' in self.options['solver_options']:
-            self.heat       = tacs.createVec()
+            self.heat       = self.tacs.createVec()
 
             self.xpts  = self.tacs.createNodeVec()
             self.tacs.getNodes(self.xpts)
-            self.mapping = options['surface_mapping']
             xpts_array = self.xpts.getArray()
-            xpts_hot_surf = xpts_array[self.mapping]
+            xpts_hot_surf, self.mapping = options['surface_mapping'](xpts_array)
+            # xpts_hot_surf = xpts_array[self.mapping]
 
             n_nodes_hot_surf = xpts_hot_surf.size//3
 
@@ -230,9 +246,9 @@ class TacsSolver(om.ImplicitComponent):
             print('conduction temp_cond', n_nodes_hot_surf)
             self.add_output('temp',      shape=n_nodes_hot_surf, val = np.ones(n_nodes_hot_surf)*300,desc='temperature vector')
 
-
         else:
             self.add_input('f_s', shape=state_size, src_indices=np.arange(s1, s2, dtype=int), desc='structural load vector')
+            self.add_input('dv_struct', shape=self.ndv, desc='tacs design variables')
             # outputs
             # its important that we set this to zero since this displacement value is used for the first iteration of the aero
             self.add_output('u_s', shape=state_size, val = np.zeros(state_size),desc='structural state vector')
@@ -240,6 +256,8 @@ class TacsSolver(om.ImplicitComponent):
 
 
     def _need_update(self,inputs):
+
+
         if self.old_dvs is None:
             self.old_dvs = inputs['dv_struct'].copy()
             return True
@@ -252,6 +270,27 @@ class TacsSolver(om.ImplicitComponent):
         return False
 
     def _update_internal(self,inputs,outputs=None):
+        if not 'dv_struct' in inputs:
+            pc     = self.pc
+            alpha = 1.0
+            beta  = 0.0
+            gamma = 0.0
+
+            xpts = self.tacs.createNodeVec()
+            self.tacs.getNodes(xpts)
+            xpts_array = xpts.getArray()
+            xpts_array[:] = inputs['x_s0']
+            self.tacs.setNodes(xpts)
+
+            res = self.tacs.createVec()
+            res_array = res.getArray()
+            res_array[:] = 0.0
+
+            self.tacs.assembleJacobian(alpha,beta,gamma,res,self.mat)
+            pc.factor()
+
+            return
+
         if self._need_update(inputs):
             self.tacs.setDesignVars(np.array(inputs['dv_struct'],dtype=TACS.dtype))
 
@@ -316,18 +355,35 @@ class TacsSolver(om.ImplicitComponent):
         pc     = self.pc
         gmres  = self.gmres
 
+
+
+        pc     = self.pc
+        alpha = 1.0
+        beta  = 0.0
+        gamma = 0.0
+
+        xpts = self.tacs.createNodeVec()
+        self.tacs.getNodes(xpts)
+        xpts_array = xpts.getArray()
+        xpts_array[:] = inputs['x_s0']
+        self.tacs.setNodes(xpts)
+
+        res = self.tacs.createVec()
+        res_array = res.getArray()
+        res_array[:] = 0.0
+
         self._update_internal(inputs)
         
         if 'Conduction' in self.options['solver_options']:
             heat = self.heat
+
+            heat.zeroEntries()
             heat_array = heat.getArray()
-            
             # may need to do mapping here
             heat_array[self.mapping] = inputs['heat_xfer']
-    
+
 
             self.tacs.setBCs(heat)
-
 
             gmres.solve(heat, ans)
             ans_array = ans.getArray()
@@ -336,7 +392,12 @@ class TacsSolver(om.ImplicitComponent):
 
             ans_array = ans.getArray()
         
-            outputs['temp_cond'] = ans_array[self.mapping]
+            outputs['temp'] = ans_array[self.mapping]
+            print(outputs['temp'])
+
+            if self.f5_writer is not None:
+                self.f5_writer(self.tacs)
+
         else:
             # solve the linear system
             force_array = force.getArray()

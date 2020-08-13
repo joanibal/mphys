@@ -328,14 +328,15 @@ class AdflowSolver(ImplicitComponent):
             name = args[0]
             size = args[1]
 
+            val = kwargs['value']
+
 
             s_list = self.comm.allgather(size)
 
             s1 = np.sum(s_list[:irank])
             s2 = np.sum(s_list[:irank+1])
 
-
-            self.add_input(name, shape=size, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
+            self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
             if self.comm.rank == 0:
                 print(irank, name, size, s1, s2)
 
@@ -524,6 +525,7 @@ class AdflowForces(ExplicitComponent):
         for (args, kwargs) in self.ap_vars:
             name = args[0]
             size = args[1]
+            val = kwargs['value']
 
 
             s_list = self.comm.allgather(size)
@@ -531,8 +533,7 @@ class AdflowForces(ExplicitComponent):
             s1 = np.sum(s_list[:irank])
             s2 = np.sum(s_list[:irank+1])
 
-
-            self.add_input(name, shape=size, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
+            self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
             if self.comm.rank == 0:
                 print(irank, name, size, s1, s2)
 
@@ -662,7 +663,7 @@ class AdflowHeatTransfer(ExplicitComponent):
         # self.comm.barrier()
         # self.comm.barrier()
         # print(solver.getWallTemperature(solver.allWallsGroup))
-        self.add_output('heatflux', val=np.ones(local_nodes)*-499, shape=local_nodes, units='W/m**2')
+        self.add_output('heatflux', val=np.ones(local_nodes)*0, shape=local_nodes, units='W/m**2')
 
         #self.declare_partials(of='f_a', wrt='*')
 
@@ -684,13 +685,15 @@ class AdflowHeatTransfer(ExplicitComponent):
             size = args[1]
 
 
+            val = kwargs['value']
+
+
             s_list = self.comm.allgather(size)
 
             s1 = np.sum(s_list[:irank])
             s2 = np.sum(s_list[:irank+1])
 
-
-            self.add_input(name, shape=size, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
+            self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
             if self.comm.rank == 0:
                 print(irank, name, size, s1, s2)
 
