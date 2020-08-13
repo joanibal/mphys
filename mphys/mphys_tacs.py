@@ -31,7 +31,10 @@ class TacsObjsBuilder(ObjBuilder):
         ndof, ndv = self.options['add_elements'](mesh)
         assembler = mesh.createTACS(ndof)
 
-        mat = assembler.createSchurMat()
+        try:
+            mat = assembler.createFEMat()
+        except AttributeError:
+            mat = assembler.createSchurMat()
 
 
 

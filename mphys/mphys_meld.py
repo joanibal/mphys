@@ -248,6 +248,14 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
         print('sum heat in ', np.sum(heat_xfer_conv), 'out', np.sum(heat_xfer_cond))
         print('-------------------------------------------------------------------')
 
+
+
+### ======================================
+## Load and displacement transfer
+### ======================================
+
+
+
 class MELD_disp_xfer(om.ExplicitComponent):
     """
     Component to perform displacement transfer using MELD
@@ -260,18 +268,29 @@ class MELD_disp_xfer(om.ExplicitComponent):
 
         self.options['distributed'] = True
 
-        self.solvers_init = False
-
+        self.objBuilders = [MeldObjBuilder()]
         self.initialized_meld = False
 
         self.check_partials = False
-
         self.solver_objects = {'Meld': None}
+
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
+
+
 
     def setup(self):
  
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
+
+
+        self.meld = self.objBuilders[0].obj
 
 
         # self.struct_ndof   = self.options['struct_ndof']
@@ -298,31 +317,18 @@ class MELD_disp_xfer(om.ExplicitComponent):
         # su2 = np.sum(su_list[:irank+1])
 
         # inputs
-        # # must be done at the configure level because size may not even be defined yet!
-        # self.add_input('x_s0', shape = 0, src_indices = [], desc='initial structural node coordinates') #np.arange(sx1, sx2, dtype=int)
-        # self.add_input('x_a0', shape = 0, src_indices = [], desc='initial aerodynamic surface node coordinates') #np.arange(ax1, ax2, dtype=int)
-        # self.add_input('u_s',  shape = 0, src_indices = [], desc='structural node displacements') #np.arange(su1, su2, dtype=int)
+        self.add_input('x_s0', shape_by_conn=True, desc='initial structural node coordinates') #np.arange(sx1, sx2, dtype=int)
+        self.add_input('x_a0', shape_by_conn=True, desc='initial aerodynamic surface node coordinates') #np.arange(ax1, ax2, dtype=int)
+        self.add_input('u_s', shape_by_conn=True,  desc='structural node displacements') #np.arange(su1, su2, dtype=int)
 
-        # # outputs
-        # self.add_output('u_a', shape = 0,  desc='aerodynamic surface displacements')
+        # outputs
+        self.add_output('u_a', shape_by_conn=True,  desc='aerodynamic surface displacements')
 
 
-    def init_solver_objects(self, comm):
-        # create the transfer
-        #TODO add this code to an meld component base class
-        if self.solver_objects['Meld'] == None:
-            self.solver_objects['Meld'] = TransferScheme.pyMELD(comm,
-                                                    comm, 0,
-                                                    comm, 0,
-                                                    self.options['solver_options']['isym'],
-                                                    self.options['solver_options']['n'],
-                                                    self.options['solver_options']['beta'])
-
-        self.solvers_init = True
 
 
     def compute(self, inputs, outputs):
-        meld = self.solver_objects['Meld']
+        meld = self.meld
         x_s0 = np.array(inputs['x_s0'],dtype=TransferScheme.dtype)
         x_a0 = np.array(inputs['x_a0'],dtype=TransferScheme.dtype)
         u_a  = np.array(outputs['u_a'],dtype=TransferScheme.dtype)
@@ -357,7 +363,7 @@ class MELD_disp_xfer(om.ExplicitComponent):
             D = u_a - g(u_s,x_a0,x_s0)
         So explicit partials below for u_a are negative partials of D
         """
-        meld = self.solver_objects['Meld']
+        meld = self.meld
         if mode == 'fwd':
             if 'u_a' in d_outputs:
                 if 'u_s' in d_inputs:
@@ -413,30 +419,30 @@ class MELD_load_xfer(om.ExplicitComponent):
         self.options['distributed'] = True
 
         # meld = None
+        self.objBuilders = [MeldThermalObjBuilder()]
+
+        self.check_partials = False
         self.initialized_meld = False
 
-        self.solvers_init = False
-        self.solver_objects = {'Meld': None}
 
 
-
-    def init_solver_objects(self, comm):
-        # create the transfer
-        #TODO add this code to an meld component base class
-        if self.solver_objects['Meld'] == None:
-            self.solver_objects['Meld'] = TransferScheme.pyMELD(comm,
-                                                    comm, 0,
-                                                    comm, 0,
-                                                    self.options['solver_options']['isym'],
-                                                    self.options['solver_options']['n'],
-                                                    self.options['solver_options']['beta'])
-
-        self.solvers_init = True
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        for b in self.objBuilders:
+            b.options = self.options['solver_options']
 
     def setup(self):
+        # get the transfer scheme object
 
-        if not self.solvers_init:
-            self.init_solver_objects(self.comm)
+
+
+        for b in self.objBuilders:
+            if b.obj is None:
+                b.obj = b.build_obj(self.comm)
+
+
+        self.meld = self.objBuilders[0].obj
 
         # # get the transfer scheme object
         # self.meld = self.options['xfer_object']
@@ -465,29 +471,29 @@ class MELD_load_xfer(om.ExplicitComponent):
         # su2 = np.sum(su_list[:irank+1])
 
         # # inputs
-        # self.add_input('x_s0', shape = struct_nnodes*3,           src_indices = np.arange(sx1, sx2, dtype=int), desc='initial structural node coordinates')
-        # self.add_input('x_a0', shape = aero_nnodes*3,             src_indices = np.arange(ax1, ax2, dtype=int), desc='initial aerodynamic surface node coordinates')
-        # self.add_input('u_s',  shape = struct_nnodes*struct_ndof, src_indices = np.arange(su1, su2, dtype=int), desc='structural node displacements')
-        # self.add_input('f_a',  shape = aero_nnodes*3,             src_indices = np.arange(ax1, ax2, dtype=int), desc='aerodynamic force vector')
+        self.add_input('x_s0', shape_by_conn=True, desc='initial structural node coordinates')
+        self.add_input('x_a0', shape_by_conn=True, desc='initial aerodynamic surface node coordinates')
+        self.add_input('u_s',  shape_by_conn=True, desc='structural node displacements')
+        self.add_input('f_a',  shape_by_conn=True, desc='aerodynamic force vector')
 
         # # outputs
-        # self.add_output('f_s', shape = struct_nnodes*struct_ndof, desc='structural force vector')
+        self.add_output('f_s', shape_by_conn=True, desc='structural force vector')
 
         # # partials
         #self.declare_partials('f_s',['x_s0','x_a0','u_s','f_a'])
 
     def compute(self, inputs, outputs):
-        meld = self.solver_objects['Meld']
+        meld = self.meld
 
 
-        if not self.initialized_meld:
-            x_s0 = np.array(inputs['x_s0'],dtype=TransferScheme.dtype)
-            x_a0 = np.array(inputs['x_a0'],dtype=TransferScheme.dtype)
+        # if not self.initialized_meld:
+        #     x_s0 = np.array(inputs['x_s0'],dtype=TransferScheme.dtype)
+        #     x_a0 = np.array(inputs['x_a0'],dtype=TransferScheme.dtype)
 
-            self.struct_nnodes = x_s0.size//3
-            self.aero_nnodes = x_a0.size//3
-            self.struct_ndof =  inputs['u_s'].size//self.struct_nnodes
-            self.initialized_meld = True
+        self.struct_nnodes = inputs['x_s0'].size//3
+        self.struct_ndof =  inputs['u_s'].size//self.struct_nnodes
+        # self.aero_nnodes = x_a0.size//3
+        # self.initialized_meld = True
 
         f_a =  np.array(inputs['f_a'],dtype=TransferScheme.dtype)
         f_s = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
@@ -521,7 +527,7 @@ class MELD_load_xfer(om.ExplicitComponent):
             L = f_s - g(f_a,u_s,x_a0,x_s0)
         So explicit partials below for f_s are negative partials of L
         """
-        meld = self.solver_objects['Meld']
+        meld = self.meld
 
 
         if mode == 'fwd':
