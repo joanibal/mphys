@@ -419,7 +419,7 @@ class MELD_load_xfer(om.ExplicitComponent):
         self.options['distributed'] = True
 
         # meld = None
-        self.objBuilders = [MeldThermalObjBuilder()]
+        self.objBuilders = [MeldObjBuilder()]
 
         self.check_partials = False
         self.initialized_meld = False
