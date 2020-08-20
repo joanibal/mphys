@@ -45,6 +45,10 @@ parser.add_argument('--nmodes', default=15)
 parser.add_argument('--input_dir', default = './INPUT')
 parser.add_argument('--driver', default='scipy', choices=['scipy', 'snopt'])
 parser.add_argument('--aitken', default=True)
+
+parser.add_argument('--step_size', help='step size', type=float, default=5e-3)
+parser.add_argument('--min_heatxfer', help='lower bound on heatflux (negated in func)', type=float, default=0)
+
 args = parser.parse_args()
 
 # ------------------------ Helper Functions --------------------------
@@ -127,7 +131,7 @@ class Top(om.Group):
             # I/O Parameters
             'gridFile':'./meshes/array_temp/nacelle_' + args.level + '.cgns',
             'outputDirectory':args.output_dir,
-            'monitorvariables':['resrho','resturb','cl','cd', 'heatflux'],
+            'monitorvariables':['resrho','resturb','cl','cd', 'totheattransfer'],
             'surfacevariables': ['cp','vx', 'vy', 'vz', 'mach', 'heatflux', 'temp'],
             # 'isovariables': ['shock'],
             'isoSurface':{'shock':1}, #,'vx':-0.0001},
@@ -161,11 +165,11 @@ class Top(om.Group):
             'nkswitchtol':1e-4,
 
             # Termination Criteria
-            'L2Convergence':1e-13,
+            'L2Convergence':1e-15,
             'L2ConvergenceCoarse':1e-2,
             'L2ConvergenceRel': 1e-3,
             'nCycles':3000,
-            'adjointl2convergencerel': 1e-3,
+            'adjointl2convergencerel': 1e-10,
 
 
         }
@@ -185,7 +189,7 @@ class Top(om.Group):
                         P=93e3, # pa
                         areaRef=1.0,  #m^2
                         chordRef=1.0, #m^2
-                        evalFuncs=[ 'cd', 'heatflux', 'havg'],
+                        evalFuncs=[ 'cd', 'totheattransfer', 'havg'],
                         alpha=0.0, beta=0.00,
                         xRef=0.0, yRef=0.0, zRef=0.0)
 
@@ -253,9 +257,10 @@ class Top(om.Group):
                                'mesh': False,
                                'deformer': True,
                                'heatxfer':True,
-                               'funcs':False
+                               'funcs':True
                            }),
-                           promotes=['wall_temp', 'x_a'])
+                           promotes=['wall_temp', 'x_a', 'totheattransfer'])
+                        #    promotes=['wall_temp', 'x_a'])
                            # I'm explicitly promoteing the aero problem var, but it would
                            # be better to do this through a tag
                            
@@ -266,15 +271,15 @@ class Top(om.Group):
         mda.connect('conv.heatflux', ['cond.heatflux'])
 
 
-        mda.nonlinear_solver=om.NonlinearBlockGS(maxiter=100)
-        mda.linear_solver = om.LinearBlockGS(maxiter=100)
+        mda.nonlinear_solver=om.NonlinearBlockGS(maxiter=10)
+        mda.linear_solver = om.LinearBlockGS(maxiter=20)
         mda.nonlinear_solver.options['iprint']=2
         # solver options
         mda.nonlinear_solver.options['use_aitken'] = args.aitken
         mda.nonlinear_solver.options['atol'] = 1e-4
         mda.nonlinear_solver.options['rtol'] = 1e-20
-        mda.linear_solver.options['atol'] = 1e-5
-        mda.linear_solver.options['rtol'] = 1e-5
+        mda.linear_solver.options['atol'] = 1e-4
+        mda.nonlinear_solver.options['rtol'] = 1e-20
         mda.linear_solver.options['iprint'] = 2
 
 
@@ -350,14 +355,17 @@ elif args.driver == 'snopt':
 # prob.driver.add_recorder(recorder)
 prob.model.add_design_var('scale_sections',lower=0.7, upper=1.6)
 prob.model.add_objective('conj_hxfer.aero.cd',ref=1e-3)
+prob.model.add_constraint('conj_hxfer.totheattransfer', lower=-1*args.min_heatxfer*1.5,  upper=-1*args.min_heatxfer, scaler=1e2)
 
 
 # prob.model.add_constraint('conj_hxfer.conv.heatflux',ref=500.0,equals=500.0)
 # prob.model._set_subsys_connection_errors(False)
 recorder = om.SqliteRecorder(args.output_dir + '/hist_opt.db', record_viewer_data=False)
 prob.driver.add_recorder(recorder)
+
+prob.driver.recording_options['record_inputs'] = True
 prob.driver.recording_options['record_desvars'] = True
-prob.driver.recording_options['record_responses'] = True
+prob.driver.recording_options['record_responses'] = False
 prob.driver.recording_options['record_objectives'] = True
 prob.setup(mode='rev')
 
@@ -369,11 +377,11 @@ om.n2(prob, show_browser=False, outfile='%s/mphys_conj_opt.html'%(args.output_di
 if args.task == 'analysis':
     prob.run_model()
     # prob.model.list_outputs()
-    # if MPI.COMM_WORLD.rank == 0:
+    if MPI.COMM_WORLD.rank == 0:
     #     print("Scenario 0")
     #     if args.aero == 'adflow':
-    #         print('cl =',prob['aerostruct.cl'])
-    #         print('cd =',prob['aerostruct.cd'])
+            # print('Q =',prob['conj_hxfer.totheattransfer'])
+            print('cd =',prob['conj_hxfer.aero.cd'])
     #     else:
     #         print('cl =',prob['aerostuct.solver_group.aero.forces.CL'])
     #         print('cd =',prob['aerostuct.solver_group.aero.forces.CD'])

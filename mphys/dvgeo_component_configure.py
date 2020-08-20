@@ -122,7 +122,7 @@ class DVGeoComp(om.ExplicitComponent):
 
         self.initialized = False
 
-
+        self.options['distributed'] = True
 
         # function used to add all the design variables, etc.
         self.options.declare('setup_dvgeo',recordable=False)
@@ -144,8 +144,7 @@ class DVGeoComp(om.ExplicitComponent):
             for key in varLists[lst]:
                 dv = varLists[lst][key]
 
-                self.add_input(dv.name, shape=dv.value.shape)
-
+                self.add_input(dv.name, src_indices=np.arange(dv.value.size), shape=dv.value.shape)
         self.add_output('deformed_pts', copy_shape='pts')
         
     def compute(self, inputs, outputs):
@@ -187,11 +186,12 @@ class DVGeoComp(om.ExplicitComponent):
 
         # only do the computations when we have more than zero entries in d_inputs in the reverse mode
         ni = len(list(d_inputs.keys()))
+        print(list(d_inputs.keys()))
 
-        if mode == 'rev' and ni > 0:
+        # import ipdb; ipdb.set_trace()
+        if mode == 'rev' and ni > 1:
             # for ptSetName in self.DVGeo.ptSetNames:
                 ptSetName = 'pt_set'
-
                 dout = d_outputs['deformed_pts'].reshape(len(d_outputs['deformed_pts'])//3, 3)
                 xdot = self.DVGeo.totalSensitivityTransProd(dout, ptSetName)
 
@@ -203,6 +203,7 @@ class DVGeoComp(om.ExplicitComponent):
                         # do the allreduce
                         # TODO reove the allreduce when this is fixed in openmdao
                         # reduce the result ourselves for now. ideally, openmdao will do the reduction itself when this is fixed. this is because the bcast is also done by openmdao (pyoptsparse, but regardless, it is not done here, so reduce should also not be done here)
+                        print(self.comm.rank, k , xdot)
                         xdotg[k] = self.comm.allreduce(xdot[k], op=MPI.SUM)
 
                         # accumulate in the dict

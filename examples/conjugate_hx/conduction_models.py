@@ -73,7 +73,6 @@ class Conduction(om.ExplicitComponent, SolverObjectBasedSystem):
         self.epoxy_thickness = 1e-4 # m
         self.T_mid = 273.0 + 165  # deg kelvin ~220 degs C
 
-
     def compute(self, inputs, outputs):
         """
             solves for the wall temperature given the thermal conductivity of
@@ -573,10 +572,10 @@ class ConductionNodal(om.ExplicitComponent):
 
                 # d_outputs['T_surf'] = d_T_surf[self.t1:self.t2]
 
-                d_T_surf = self.comm.allreduce(d_T_surf, op=MPI.SUM)
+                print(self.comm.rank, d_T_surf)
+                # d_T_surf = self.comm.allreduce(d_T_surf, op=MPI.SUM)
                 d_T_surf = np.reshape(d_T_surf,area_nodes_global.shape)
 
-                print(self.comm.rank, d_T_surf)
                 # d_T_surf =  d_T_surf.flatten()
 
                 # if 'heatflux' in d_inputs:
@@ -601,7 +600,7 @@ class ConductionNodal(om.ExplicitComponent):
                                                                         d_R_therm, d_area_nodes_global)
 
 
-                d_x_a  = np.reshape(d_x_motor_global , x_a.shape)
+                d_x_a  = np.reshape(d_x_motor_global , x_a.shape).flatten()
                 if 'x_a' in d_inputs:
                     d_inputs['x_a'] += d_x_a
                     print(self.comm.rank, 'd_inputs[x_a]', d_x_a, self.t1, self.t2)
@@ -775,8 +774,14 @@ class ConductionNodal(om.ExplicitComponent):
         nNodes_row = int(np.sqrt(x_motor.shape[1])) # the nodes are always perfect squares
 
         #number of cells on  each block face
-        nCells_blk = int((np.sqrt(x_motor.shape[1]) - 1)**2)
+        if nNodes_row >1:
+            nCells_blk = int((nNodes_row - 1)**2)
+        else:
+            nCells_blk = 0
+        # nCells_row = int(np.sqrt(nCells_blk)) # the cells are always perfect squares
+
         nCells_row = int(np.sqrt(nCells_blk)) # the cells are always perfect squares
+
 
         radius_nodes = np.sqrt(x_motor[:,:, 1]**2 + x_motor[:,:, 2]**2)
         # d_radius_nodes = np.zeros((x_motor.shape[0],x_motor.shape[1]))

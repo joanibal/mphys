@@ -337,8 +337,8 @@ class AdflowSolver(ImplicitComponent):
             s2 = np.sum(s_list[:irank+1])
 
             self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
-            if self.comm.rank == 0:
-                print(irank, name, size, s1, s2)
+            # if self.comm.rank == 0:
+            print(irank, name, size, s1, s2)
 
     def _set_states(self, outputs):
         self.solver.setStates(outputs['q'])
@@ -377,8 +377,7 @@ class AdflowSolver(ImplicitComponent):
             ap.fatalFail = False
 
             solver(ap)
-        
-        print(solver.getHeatFluxes(groupName='allIsothermalWalls'))
+
         outputs['q'] = solver.getStates()
 
 
@@ -629,7 +628,6 @@ class AdflowHeatTransfer(ExplicitComponent):
         for b in self.objBuilders:
             if b.obj is None:
                 b.obj = b.build_obj(self.comm)
-                import ipdb; ipdb.set_trace()
 
         solver = self.solver = self.objBuilders[0].obj
 
@@ -759,8 +757,8 @@ class AdflowHeatTransfer(ExplicitComponent):
         elif mode == 'rev':
             if 'heatflux' in d_outputs:
                 hfBar = d_outputs['heatflux']
-
-                import ipdb; ipdb.set_trace()
+                print(np.sum(hfBar))
+                # import ipdb; ipdb.set_trace()
                 
                 hfBar_map = np.zeros((hfBar.size, 3))
                 hfBar_map[:,0] = hfBar.flatten()
@@ -868,16 +866,30 @@ class AdflowFunctions(ExplicitComponent):
         tmp = {}
         for (args, kwargs) in self.ap_vars:
             name = args[0]
-            tmp[name] = inputs[name][0]
+            tmp[name] = inputs[name]
 
         self.ap.setDesignVars(tmp)
+
+
+    # def _set_ap(self, inputs):
+    #     tmp = {}
+    #     irank  = self.comm.rank
+    #     print(irank, 'setup', self.ap_vars)
+
+    #     for (args, kwargs) in self.ap_vars:
+    #         name = args[0]
+    #         tmp[name] = inputs[name][0]
+    #         print(irank, name)
+    #     print(tmp)
+    #     self.ap.setDesignVars(tmp)
         #self.options['solver'].setAeroProblem(self.options['aero_problem'])
 
     def set_ap(self, ap):
         # this is the external function to set the ap to this component
-        self.ap = copy.copy(ap)
+        self.ap = ap
 
         self.ap_vars,_ = get_dvs_and_cons(ap=ap)
+        irank  = self.comm.rank
 
         # parameter inputs
         if self.comm.rank == 0:
@@ -885,9 +897,19 @@ class AdflowFunctions(ExplicitComponent):
         for (args, kwargs) in self.ap_vars:
             name = args[0]
             size = args[1]
-            self.add_input(name, shape=size, units=kwargs['units'])
+
+
+            val = kwargs['value']
+
+
+            s_list = self.comm.allgather(size)
+
+            s1 = np.sum(s_list[:irank])
+            s2 = np.sum(s_list[:irank+1])
+
+            self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
             if self.comm.rank == 0:
-                print(name)
+                print(irank, name, size, s1, s2)
 
         for f_name in self.ap.evalFuncs:
 
@@ -900,6 +922,8 @@ class AdflowFunctions(ExplicitComponent):
                 self.add_output(f_name, shape=1)
             #self.add_output(f_name, shape=1, units=units)
 
+
+
     def _set_states(self, inputs):
         self.solver.setStates(inputs['q'])
 
@@ -907,12 +931,16 @@ class AdflowFunctions(ExplicitComponent):
         return '%s_%s' % (self.ap.name, name.lower())
 
     def compute(self, inputs, outputs):
+        irank  = self.comm.rank
+
         solver = self.solver
         ap = self.ap
         #print('funcs compute')
         #actually setting things here triggers some kind of reset, so we only do it if you're actually solving
         if self._do_solve:
+            print(irank, '=============funcs==================')
             self._set_ap(inputs)
+            print(irank, '=============funcs 0.5 ==================')
             # Set the warped mesh
             #solver.mesh.setSolverGrid(inputs['x_g'])
             # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
@@ -921,7 +949,12 @@ class AdflowFunctions(ExplicitComponent):
         funcs = {}
 
         eval_funcs = [f_name for f_name in self.ap.evalFuncs]
+        print(irank ,'=============funcs 1==================')
+
         solver.evalFunctions(ap, funcs, eval_funcs)
+        print('=============funcs 2==================')
+
+        print(funcs)
 
         for name in self.ap.evalFuncs:
             f_name = self._get_func_name(name)
@@ -983,9 +1016,12 @@ class AdflowFunctions(ExplicitComponent):
             xVBar = None
             xDVBar = None
 
+            print('hi there!')
             wBar, xVBar, xDVBar = solver.computeJacobianVectorProductBwd(
                 funcsBar=funcsBar,
                 wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True)
+            print(self.comm.rank, 'bye thre')
+            
             if 'q' in d_inputs:
                 d_inputs['q'] += wBar
             if 'x_g' in d_inputs:
@@ -994,7 +1030,6 @@ class AdflowFunctions(ExplicitComponent):
             for dv_name, dv_bar in xDVBar.items():
                 if dv_name in d_inputs:
                     d_inputs[dv_name] += dv_bar.flatten()
-
 
 
 class AdflowGroup(Analysis):

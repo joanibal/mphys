@@ -168,7 +168,7 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         # if not self.initialized_meld:
         #     self.meldThermal.initialize()
         #     self.initialized_meld = True
-
+        prtin('transfering temps')
         self.meldThermal.transferTemp(temp_cond,temp_conv)
 
         outputs['temp_conv'] = temp_conv
@@ -226,7 +226,8 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
 
       
     def compute(self, inputs, outputs):
- 
+         print('hi')
+
         heat_xfer_conv =  np.array(inputs['heat_xfer_conv'],dtype=TransferScheme.dtype)
         heat_xfer_cond = outputs['heat_xfer_cond']
 
@@ -234,9 +235,11 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
         x_cond0 = np.array(inputs['x_cond0'],dtype=TransferScheme.dtype)
         x_conv0 = np.array(inputs['x_conv0'],dtype=TransferScheme.dtype)
 
+        print('meld set mesh')
         self.meldThermal.setStructNodes(x_cond0)
         self.meldThermal.setAeroNodes(x_conv0)
 
+        print('meld init')
         if not self.initialized_meld:
             self.meldThermal.initialize()
             self.initialized_meld = True
@@ -492,7 +495,7 @@ class MELD_load_xfer(om.ExplicitComponent):
 
         self.struct_nnodes = inputs['x_s0'].size//3
         self.struct_ndof =  inputs['u_s'].size//self.struct_nnodes
-        # self.aero_nnodes = x_a0.size//3
+        self.aero_nnodes = inputs['x_a0'].size//3
         # self.initialized_meld = True
 
         f_a =  np.array(inputs['f_a'],dtype=TransferScheme.dtype)

@@ -47,7 +47,7 @@ class Top(om.Group):
             # Termination Criteria
             'L2Convergence':1e-2,
             'L2ConvergenceCoarse':1e-2,
-            'nCycles':1000,
+            'nCycles':10,
         }
 
         ap0 = AeroProblem(
@@ -64,8 +64,8 @@ class Top(om.Group):
         aero = AdflowGroup(aero_problem = ap0, 
                            solver_options = aero_options, 
                            group_options = {
-                               'mesh': False,
-                               'deformer': False
+                               'mesh': True,
+                               'deformer': True
                            })
 
         # the solver must be created before added the group as a subsystem.
