@@ -84,6 +84,7 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         # cond_ndof = self.cond_ndof
         # cond_nnodes = self.cond_nnodes
         # conv_nnodes = self.conv_nnodes
+        self.check_partials= self.options['check_partials']
 
         # irank = self.comm.rank
 
@@ -147,6 +148,17 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         temp_conv  = np.array(outputs['temp_conv'],dtype=TransferScheme.dtype)
         temp_cond  = np.array(inputs['temp_cond'],dtype=TransferScheme.dtype)
 
+
+        print('meld set mesh')
+        self.meldThermal.setStructNodes(x_cond0)
+        self.meldThermal.setAeroNodes(x_conv0)
+
+        print('meld init')
+        if not self.initialized_meld:
+            self.meldThermal.initialize()
+            self.initialized_meld = True
+
+
         print('transfering temps')
         self.meldThermal.transferTemp(temp_cond,temp_conv)
         outputs['temp_conv'] = temp_conv
@@ -165,13 +177,7 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         So explicit partials below for u_a are negative partials of D
         """
 
-        self.add_input('x_cond0', shape_by_conn=True, desc='initial structural node coordinates')
-        self.add_input('x_conv0', shape_by_conn=True, desc='initial aerodynamic surface node coordinates')
-
-        self.add_input('temp_cond', shape_by_conn=True , desc='conductive nodal temperature')
-        self.add_output('temp_conv', shape_by_conn=True , desc='convective nodal temperature')
-
-        meld = self.meld
+        meld = self.meldThermal
         if mode == 'fwd':
             if 'temp_conv' in d_outputs:
                 if 'temp_cond' in d_inputs:
@@ -182,7 +188,7 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
                     prod = np.zeros( d_outputs['temp_conv'].size,dtype=TransferScheme.dtype)
 
                     meld.applydTdtS(d_temp_cond,prod)
-                    d_outputs['temp_conv'] -= np.array(prod,dtype=float)
+                    d_outputs['temp_conv'] += np.array(prod,dtype=float)
 
                 if 'x_conv0' in d_inputs:
                     if self.check_partials:
@@ -207,16 +213,16 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
 
                     meld.applydTdtSTrans(dtemp_conv,prod)
 
-                    d_inputs['temp_cond'] -= np.array(prod,dtype=np.float64)
+                    d_inputs['temp_cond'] += np.array(prod,dtype=np.float64)
 
                 # dtemp_conv/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
-                if 'x_a0' in d_inputs:
-                    prod = np.zeros(d_inputs['x_a0'].size,dtype=TransferScheme.dtype)
-                    meld.applydLdxA0(du_a,prod)
-                    d_inputs['x_a0'] -= np.array(prod,dtype=float)
+                if 'x_conv0' in d_inputs:
+                    prod = np.zeros(d_inputs['x_conv0'].size,dtype=TransferScheme.dtype)
+                    meld.applydLdxA0(dtemp_conv,prod)
+                    d_inputs['x_conv0'] -= np.array(prod,dtype=float)
 
                 if 'x_cond0' in d_inputs:
-                    prod = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
+                    prod = np.zeros(d_inputs['x_cond0'].size,dtype=TransferScheme.dtype)
                     meld.applydLdxS0(dtemp_conv,prod)
                     d_inputs['x_cond0'] -= np.array(prod,dtype=float)
 
@@ -243,7 +249,6 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
         # self.cond_ndof = None
         # self.cond_nnodes = None
         # self.conv_nnodes = None
-        self.check_partials = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -254,6 +259,7 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
     def setup(self):
         # get the transfer scheme object
 
+        self.check_partials= self.options['check_partials']
 
 
         for b in self.objBuilders:
@@ -310,7 +316,7 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
 
 
 
-        meld = self.meld
+        meld = self.meldThermal
         if mode == 'fwd':
             if 'heat_xfer_cond' in d_outputs:
                 if 'heat_xfer_conv' in d_inputs:
@@ -321,7 +327,7 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
                     prod = np.zeros( d_outputs['heat_xfer_cond'].size,dtype=TransferScheme.dtype)
 
                     meld.applydQdqA(d_heat_xfer_conv,prod)
-                    d_outputs['heat_xfer_cond'] -= np.array(prod,dtype=float)
+                    d_outputs['heat_xfer_cond'] += np.array(prod,dtype=float)
 
                 if 'x_conv0' in d_inputs:
                     if self.check_partials:
@@ -346,18 +352,18 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
 
                     meld.applydQdqATrans(dheat_xfer_cond,prod)
 
-                    d_inputs['heat_xfer_conv'] -= np.array(prod,dtype=np.float64)
+                    d_inputs['heat_xfer_conv'] += np.array(prod,dtype=np.float64)
 
                 # dheat_xfer_cond/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
-                if 'x_a0' in d_inputs:
-                    prod = np.zeros(d_inputs['x_a0'].size,dtype=TransferScheme.dtype)
-                    meld.applydLdxA0(du_a,prod)
-                    d_inputs['x_a0'] -= np.array(prod,dtype=float)
+                if 'x_conv0' in d_inputs:
+                    prod = np.zeros(d_inputs['x_conv0'].size,dtype=TransferScheme.dtype)
+                    meld.applydLdxA0(dheat_xfer_cond,prod)
+                    d_inputs['x_conv0'] += np.array(prod,dtype=float)
 
                 if 'x_cond0' in d_inputs:
-                    prod = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
+                    prod = np.zeros(d_inputs['x_cond0'].size,dtype=TransferScheme.dtype)
                     meld.applydLdxS0(dheat_xfer_cond,prod)
-                    d_inputs['x_cond0'] -= np.array(prod,dtype=float)
+                    d_inputs['x_cond0'] += np.array(prod,dtype=float)
 
 
 
