@@ -68,7 +68,7 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -133,7 +133,7 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         # self.add_input('temp_cond',  shape = self.cond_nnodes*cond_ndof, src_indices = np.arange(cond_temp_n1, cond_temp_n2, dtype=int),
         #                              desc='conductive node displacements')
 
-        # # outputs        
+        # # outputs
         # print('temp_conv', conv_nnodes)
 
         # self.add_output('temp_conv', shape = conv_nnodes, val=np.ones(conv_nnodes)*301, desc='conv surface temperatures')
@@ -143,39 +143,87 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
 
         x_cond0 = np.array(inputs['x_cond0'],dtype=TransferScheme.dtype)
         x_conv0 = np.array(inputs['x_conv0'],dtype=TransferScheme.dtype)
-        # mapping = self.options['mapping']
 
-        # x_surface =  np.zeros((len(mapping), 3))
-        
-        # for i in range(len(mapping)):
-        #     idx = mapping[i]*3
-        #     x_surface[i] = x_cond0[idx:idx+3]
-        
-
-        
-        # self.meldThermal.setStructNodes(x_cond0)
-        # self.meldThermal.setAeroNodes(x_conv0)
-
-        # heat_xfer_cond0 = np.array(inputs['heat_xfer_cond0'],dtype=TransferScheme.dtype)
-        # heat_xfer_conv0 = np.array(inputs['heat_xfer_conv0'],dtype=TransferScheme.dtype)
         temp_conv  = np.array(outputs['temp_conv'],dtype=TransferScheme.dtype)
-
         temp_cond  = np.array(inputs['temp_cond'],dtype=TransferScheme.dtype)
-        # for i in range(3):
-        #     temp_cond[i::3] = inputs['temp_cond'][i::self.cond_ndof]
 
-
-        # if not self.initialized_meld:
-        #     self.meldThermal.initialize()
-        #     self.initialized_meld = True
-        prtin('transfering temps')
+        print('transfering temps')
         self.meldThermal.transferTemp(temp_cond,temp_conv)
-
         outputs['temp_conv'] = temp_conv
+
         print('temp_conv')
         print(temp_conv)
-        
+
         print('avg temp in', np.mean(np.array(temp_cond)), 'out', np.mean(np.array(temp_conv)))
+
+    def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
+        """
+        The explicit component is defined as:
+            u_a = g(u_s,x_a0,x_s0)
+        The MELD residual is defined as:
+            D = u_a - g(u_s,x_a0,x_s0)
+        So explicit partials below for u_a are negative partials of D
+        """
+
+        self.add_input('x_cond0', shape_by_conn=True, desc='initial structural node coordinates')
+        self.add_input('x_conv0', shape_by_conn=True, desc='initial aerodynamic surface node coordinates')
+
+        self.add_input('temp_cond', shape_by_conn=True , desc='conductive nodal temperature')
+        self.add_output('temp_conv', shape_by_conn=True , desc='convective nodal temperature')
+
+        meld = self.meld
+        if mode == 'fwd':
+            if 'temp_conv' in d_outputs:
+                if 'temp_cond' in d_inputs:
+
+                    d_temp_cond =  np.array(d_inputs['temp_cond'],dtype=TransferScheme.dtype)
+
+
+                    prod = np.zeros( d_outputs['temp_conv'].size,dtype=TransferScheme.dtype)
+
+                    meld.applydTdtS(d_temp_cond,prod)
+                    d_outputs['temp_conv'] -= np.array(prod,dtype=float)
+
+                if 'x_conv0' in d_inputs:
+                    if self.check_partials:
+                        pass
+                    else:
+                        raise ValueError('forward mode requested but not implemented')
+
+                if 'x_cond0' in d_inputs:
+                    if self.check_partials:
+                        pass
+                    else:
+                        raise ValueError('forward mode requested but not implemented')
+
+        if mode == 'rev':
+            if 'temp_conv' in d_outputs:
+                dtemp_conv = np.array(d_outputs['temp_conv'],dtype=TransferScheme.dtype)
+
+                if 'temp_cond' in d_inputs:
+                    # dtemp_conv/dtemp_cond^T * psi = - dD/dtemp_cond^T psi
+
+                    prod = np.zeros(d_inputs['temp_cond'].size,dtype=TransferScheme.dtype)
+
+                    meld.applydTdtSTrans(dtemp_conv,prod)
+
+                    d_inputs['temp_cond'] -= np.array(prod,dtype=np.float64)
+
+                # dtemp_conv/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
+                if 'x_a0' in d_inputs:
+                    prod = np.zeros(d_inputs['x_a0'].size,dtype=TransferScheme.dtype)
+                    meld.applydLdxA0(du_a,prod)
+                    d_inputs['x_a0'] -= np.array(prod,dtype=float)
+
+                if 'x_cond0' in d_inputs:
+                    prod = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
+                    meld.applydLdxS0(dtemp_conv,prod)
+                    d_inputs['x_cond0'] -= np.array(prod,dtype=float)
+
+
+
+
+
 
 class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
     """
@@ -199,7 +247,7 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -224,14 +272,13 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
 
         # outputs
 
-      
+
     def compute(self, inputs, outputs):
-         print('hi')
 
         heat_xfer_conv =  np.array(inputs['heat_xfer_conv'],dtype=TransferScheme.dtype)
         heat_xfer_cond = outputs['heat_xfer_cond']
 
-       
+
         x_cond0 = np.array(inputs['x_cond0'],dtype=TransferScheme.dtype)
         x_conv0 = np.array(inputs['x_conv0'],dtype=TransferScheme.dtype)
 
@@ -243,13 +290,75 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
         if not self.initialized_meld:
             self.meldThermal.initialize()
             self.initialized_meld = True
-        
+
         self.meldThermal.transferFlux(heat_xfer_conv,heat_xfer_cond)
         outputs['heat_xfer_cond'] = heat_xfer_cond
 
         print('-------------------------------------------------------------------')
         print('sum heat in ', np.sum(heat_xfer_conv), 'out', np.sum(heat_xfer_cond))
         print('-------------------------------------------------------------------')
+
+
+    def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
+        """
+        The explicit component is defined as:
+            u_a = g(u_s,x_a0,x_s0)
+        The MELD residual is defined as:
+            D = u_a - g(u_s,x_a0,x_s0)
+        So explicit partials below for u_a are negative partials of D
+        """
+
+
+
+        meld = self.meld
+        if mode == 'fwd':
+            if 'heat_xfer_cond' in d_outputs:
+                if 'heat_xfer_conv' in d_inputs:
+
+                    d_heat_xfer_conv =  np.array(d_inputs['heat_xfer_conv'],dtype=TransferScheme.dtype)
+
+
+                    prod = np.zeros( d_outputs['heat_xfer_cond'].size,dtype=TransferScheme.dtype)
+
+                    meld.applydQdqA(d_heat_xfer_conv,prod)
+                    d_outputs['heat_xfer_cond'] -= np.array(prod,dtype=float)
+
+                if 'x_conv0' in d_inputs:
+                    if self.check_partials:
+                        pass
+                    else:
+                        raise ValueError('forward mode requested but not implemented')
+
+                if 'x_cond0' in d_inputs:
+                    if self.check_partials:
+                        pass
+                    else:
+                        raise ValueError('forward mode requested but not implemented')
+
+        if mode == 'rev':
+            if 'heat_xfer_cond' in d_outputs:
+                dheat_xfer_cond = np.array(d_outputs['heat_xfer_cond'],dtype=TransferScheme.dtype)
+
+                if 'heat_xfer_conv' in d_inputs:
+                    # dheat_xfer_cond/dheat_xfer_conv^T * psi = - dD/dheat_xfer_conv^T psi
+
+                    prod = np.zeros(d_inputs['heat_xfer_conv'].size,dtype=TransferScheme.dtype)
+
+                    meld.applydQdqATrans(dheat_xfer_cond,prod)
+
+                    d_inputs['heat_xfer_conv'] -= np.array(prod,dtype=np.float64)
+
+                # dheat_xfer_cond/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
+                if 'x_a0' in d_inputs:
+                    prod = np.zeros(d_inputs['x_a0'].size,dtype=TransferScheme.dtype)
+                    meld.applydLdxA0(du_a,prod)
+                    d_inputs['x_a0'] -= np.array(prod,dtype=float)
+
+                if 'x_cond0' in d_inputs:
+                    prod = np.zeros(self.struct_nnodes*3,dtype=TransferScheme.dtype)
+                    meld.applydLdxS0(dheat_xfer_cond,prod)
+                    d_inputs['x_cond0'] -= np.array(prod,dtype=float)
+
 
 
 
@@ -264,7 +373,7 @@ class MELD_disp_xfer(om.ExplicitComponent):
     Component to perform displacement transfer using MELD
     """
     def initialize(self):
-        
+
         # if pyMeldThermal should be use use set to true
         self.options.declare('solver_options')
         self.options.declare('check_partials', default=False)
@@ -280,14 +389,14 @@ class MELD_disp_xfer(om.ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
 
 
     def setup(self):
- 
+
         for b in self.objBuilders:
             if b.obj is None:
                 b.obj = b.build_obj(self.comm)
@@ -431,7 +540,7 @@ class MELD_load_xfer(om.ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 

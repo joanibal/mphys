@@ -88,7 +88,7 @@ def getDVGeo(DVGeo, ffd_file):
     """ returns the DVGeo for the deployed condition """
     from .ffd_utils import readFFDFile, getSections
 
-    
+
     coords, ffd_size = readFFDFile(ffd_file)
     sections = getSections(coords, ffd_size, section_idx=0)
 
@@ -143,18 +143,17 @@ class DVGeoComp(om.ExplicitComponent):
         for lst in varLists:
             for key in varLists[lst]:
                 dv = varLists[lst][key]
-
+                # import ipdb; ipdb.set_trace()
                 self.add_input(dv.name, src_indices=np.arange(dv.value.size), shape=dv.value.shape)
         self.add_output('deformed_pts', copy_shape='pts')
-        
+
     def compute(self, inputs, outputs):
         self.DVGeo.setDesignVars(inputs)
 
         if not self.initialized:
             pts = inputs['pts']
             self.DVGeo.addPointSet(pts.reshape(pts.size//3, 3), 'pt_set')
-        
-        
+
         outputs['deformed_pts'] = self.DVGeo.update('pt_set').flatten()
 
 
@@ -189,12 +188,11 @@ class DVGeoComp(om.ExplicitComponent):
         print(list(d_inputs.keys()))
 
         # import ipdb; ipdb.set_trace()
-        if mode == 'rev' and ni > 1:
+        if mode == 'rev' and ni > 0:
             # for ptSetName in self.DVGeo.ptSetNames:
                 ptSetName = 'pt_set'
                 dout = d_outputs['deformed_pts'].reshape(len(d_outputs['deformed_pts'])//3, 3)
                 xdot = self.DVGeo.totalSensitivityTransProd(dout, ptSetName)
-
                 # loop over dvs and accumulate
                 xdotg = {}
                 for k in xdot:

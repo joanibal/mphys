@@ -23,9 +23,8 @@ class AdflowObjBuilder(ObjBuilder):
         super().__init__(ADFLOW)
 
     def build_obj(self, comm):
-
         CFDSolver =  ADFLOW(options=self.options, comm=comm)
-        
+
         # TODO there should be a sperate set of mesh options passed to USMesh
         # TODO the user should be able to choose the kind of mesh
         mesh = USMesh(options=self.options)
@@ -49,7 +48,7 @@ class AdflowMesh(ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -62,7 +61,7 @@ class AdflowMesh(ExplicitComponent):
 
 
         for famGroup in self.options['family_groups']:
-            
+
 
             coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order='C')
             coord_size = coords.size
@@ -116,12 +115,12 @@ class Geo_Disp(ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
     def setup(self):
-        
+
 
         for b in self.objBuilders:
             if b.obj is None:
@@ -175,18 +174,18 @@ class AdflowWarper(ExplicitComponent):
 
 
         self.solver_objects = {'Adflow':None}
-        
+
         self.objBuilders = [AdflowObjBuilder()]
 
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
     def setup(self):
-        
+
 
         for b in self.objBuilders:
             if b.obj is None:
@@ -229,14 +228,13 @@ class AdflowWarper(ExplicitComponent):
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
 
         solver = self.solver
-
         if mode == 'fwd':
             if 'x_g' in d_outputs:
                 if 'x_a' in d_inputs:
                     dxS = d_inputs['x_a']
                     dxV = self.solver.mesh.warpDerivFwd(dxS)
                     d_outputs['x_g'] += dxV
-
+                    print(dxV)
         elif mode == 'rev':
             if 'x_g' in d_outputs:
                 if 'x_a' in d_inputs:
@@ -269,12 +267,12 @@ class AdflowSolver(ImplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
     def setup(self):
-        
+
 
         for b in self.objBuilders:
             if b.obj is None:
@@ -311,6 +309,7 @@ class AdflowSolver(ImplicitComponent):
             name = args[0]
             tmp[name] = inputs[name]
 
+        print(tmp)
         self.ap.setDesignVars(tmp)
 
 
@@ -378,6 +377,7 @@ class AdflowSolver(ImplicitComponent):
 
             solver(ap)
 
+
         outputs['q'] = solver.getStates()
 
 
@@ -436,10 +436,11 @@ class AdflowSolver(ImplicitComponent):
         solver = self.solver
         ap = self.ap
         if mode == 'fwd':
-            d_outputs['q'] = solver.solveDirectForRHS(d_residuals['q'])
+            d_outputs['q'] += solver.solveDirectForRHS(d_residuals['q'])
         elif mode == 'rev':
             #d_residuals['q'] = solver.solveAdjointForRHS(d_outputs['q'])
-            solver.adflow.adjointapi.solveadjoint(d_outputs['q'], d_residuals['q'], True)
+            RHS = copy.deepcopy(d_outputs['q'])
+            solver.adflow.adjointapi.solveadjoint(RHS, d_residuals['q'], True)
 
         return True, 0, 0
 
@@ -463,12 +464,12 @@ class AdflowForces(ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
     def setup(self):
-        
+
 
         for b in self.objBuilders:
             if b.obj is None:
@@ -612,11 +613,12 @@ class AdflowHeatTransfer(ExplicitComponent):
         self.options['distributed'] = True
 
         self.objBuilders = [AdflowObjBuilder()]
-
-
+        # testing flag used for unit-testing to prevent the call to actually solve
+        # NOT INTENDED FOR USERS!!! FOR TESTING ONLY
+        self._do_solve = True
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -709,27 +711,39 @@ class AdflowHeatTransfer(ExplicitComponent):
     def compute(self, inputs, outputs):
 
         solver = self.solver
-        ap = self.options['aero_problem']
+        print(id(solver))
+        print('q', np.linalg.norm(inputs['q']))
+        print('wall_tmp', np.linalg.norm(inputs['wall_temp']))
+        print('x_g', np.linalg.norm(inputs['x_g']))
 
-        ## already done by solver
-        self._set_ap(inputs)
+        if self._do_solve:
+            self._set_ap(inputs)
+            # Set the warped mesh
+            #solver.mesh.setSolverGrid(inputs['x_g'])
+            # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
+            self._set_states(inputs)
 
         # Set the warped mesh
         #solver.mesh.setSolverGrid(inputs['x_g'])
         # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
-        
+
         #
-        # self._set_states(inputs)
 
         outputs['heatflux'] = solver.getHeatFluxes().flatten(order='C')
-        print(outputs['heatflux'])
-        # print()
+        print(outputs['heatflux'] )
+        outputs['heatflux'] = solver.getHeatFluxes().flatten(order='C')
+        print(outputs['heatflux'] )
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
 
         solver = self.solver
         ap = self.options['aero_problem']
-
+        if self._do_solve:
+            self._set_ap(inputs)
+            # Set the warped mesh
+            #solver.mesh.setSolverGrid(inputs['x_g'])
+            # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
+            self._set_states(inputs)
         if mode == 'fwd':
             if 'heatflux' in d_outputs:
                 xDvDot = {}
@@ -757,14 +771,13 @@ class AdflowHeatTransfer(ExplicitComponent):
         elif mode == 'rev':
             if 'heatflux' in d_outputs:
                 hfBar = d_outputs['heatflux']
-                print(np.sum(hfBar))
                 # import ipdb; ipdb.set_trace()
-                
+
                 hfBar_map = np.zeros((hfBar.size, 3))
                 hfBar_map[:,0] = hfBar.flatten()
                 hfBar_map =  self.solver.mapVector(hfBar_map, self.solver.allIsothermalWallsGroup, self.solver.allWallsGroup)
                 hfBar = hfBar_map[:,0]
-                
+
                 wBar, xVBar, xDVBar = solver.computeJacobianVectorProductBwd(
                     hfBar=hfBar, wDeriv=True, xVDeriv=True, xDvDeriv=True)
 
@@ -827,12 +840,12 @@ class AdflowFunctions(ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
     def setup(self):
-        
+
 
         for b in self.objBuilders:
             if b.obj is None:
@@ -933,14 +946,14 @@ class AdflowFunctions(ExplicitComponent):
     def compute(self, inputs, outputs):
         irank  = self.comm.rank
 
+
+
         solver = self.solver
         ap = self.ap
         #print('funcs compute')
         #actually setting things here triggers some kind of reset, so we only do it if you're actually solving
         if self._do_solve:
-            print(irank, '=============funcs==================')
             self._set_ap(inputs)
-            print(irank, '=============funcs 0.5 ==================')
             # Set the warped mesh
             #solver.mesh.setSolverGrid(inputs['x_g'])
             # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
@@ -949,12 +962,8 @@ class AdflowFunctions(ExplicitComponent):
         funcs = {}
 
         eval_funcs = [f_name for f_name in self.ap.evalFuncs]
-        print(irank ,'=============funcs 1==================')
 
         solver.evalFunctions(ap, funcs, eval_funcs)
-        print('=============funcs 2==================')
-
-        print(funcs)
 
         for name in self.ap.evalFuncs:
             f_name = self._get_func_name(name)
@@ -964,7 +973,6 @@ class AdflowFunctions(ExplicitComponent):
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
         solver = self.solver
         ap = self.ap
-
         if mode == 'fwd':
             xDvDot = {}
             for key in ap.DVs:
@@ -1016,12 +1024,10 @@ class AdflowFunctions(ExplicitComponent):
             xVBar = None
             xDVBar = None
 
-            print('hi there!')
             wBar, xVBar, xDVBar = solver.computeJacobianVectorProductBwd(
                 funcsBar=funcsBar,
                 wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True)
-            print(self.comm.rank, 'bye thre')
-            
+
             if 'q' in d_inputs:
                 d_inputs['q'] += wBar
             if 'x_g' in d_inputs:
@@ -1071,7 +1077,7 @@ class AdflowGroup(Analysis):
         self.group_options.update(self.options['group_options'])
 
         # if you wanted to check that the user gave a valid combination of components (solver, mesh, ect)
-        # you could do that here, but they will be shown on the n2 
+        # you could do that here, but they will be shown on the n2
 
 
         print("=========")
@@ -1082,15 +1088,15 @@ class AdflowGroup(Analysis):
                     self.add_subsystem(comp, self.group_components[comp](solver_options=self.options['solver_options']),
                                         promotes=['*']) # we can connect things implicitly through promotes
                                                         # because we already know the inputs and outputs of each
-                                                        # components 
-                
+                                                        # components
+
                 else:
                     self.add_subsystem(comp, self.group_components[comp](solver_options=self.options['solver_options'],
                                                                          aero_problem=self.options['aero_problem']),
                                                     promotes=['*']) # we can connect things implicitly through promotes
                                                                     # because we already know the inputs and outputs of each
-                                                                    # components 
-        
+                                                                    # components
+
 
     def setup(self):
         super().setup()
