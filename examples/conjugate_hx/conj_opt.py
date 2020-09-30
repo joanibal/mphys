@@ -43,7 +43,7 @@ parser.add_argument('--level', default='L4', choices=['L1', 'L2', 'L3', 'L4'])
 # parser.add_argument('--xfer', default='meld', choices=['meld', 'rlt'])
 parser.add_argument('--nmodes', default=15)
 parser.add_argument('--input_dir', default = './INPUT')
-parser.add_argument('--driver', default='scipy', choices=['scipy', 'snopt'])
+parser.add_argument('--driver', default='snopt', choices=['scipy', 'snopt'])
 parser.add_argument('--aitken', default=True)
 
 parser.add_argument('--step_size', help='step size', type=float, default=5e-3)
@@ -87,7 +87,7 @@ def getDVGeo(DVGeo, ffd_file):
     """ returns the DVGeo for the deployed condition """
     from .ffd_utils import readFFDFile, getSections
 
-    
+
     coords, ffd_size = readFFDFile(ffd_file)
     sections = getSections(coords, ffd_size, section_idx=0)
 
@@ -165,15 +165,13 @@ class Top(om.Group):
             'nkswitchtol':1e-4,
 
             # Termination Criteria
-            'L2Convergence':1e-15,
+            'L2Convergence':1e-14,
             'L2ConvergenceCoarse':1e-2,
-            'L2ConvergenceRel': 1e-3,
-            'nCycles':3000,
-            'adjointl2convergencerel': 1e-10,
+            'nCycles':4000,
+            'adjointl2convergence': 1e-14,
 
 
         }
-        CFDSolver = ADFLOW(options=aero_options)
         ################################################################################
         # TRANSFER
         ################################################################################
@@ -196,15 +194,16 @@ class Top(om.Group):
 
         group = 'isothermalwall'
         BCVar = 'Temperature'
+        CFDSolver = ADFLOW(options=aero_options)
         bc_data = CFDSolver.getBCData()
         print(MPI.COMM_WORLD.rank, bc_data.getBCArraysFlatData(BCVar, familyGroup=group))
         ap_runup.setBCVar('Temperature', bc_data.getBCArraysFlatData(BCVar, familyGroup=group), group)
         ap_runup.addDV('Temperature', familyGroup=group, name='wall_temp', units='K')
-        
+
 
         ap_cruise = AeroProblem(name='fc_cruise',
                  V=54, #m/s (105 kts)
-                #  altitude= 1828.8, # m (6000 ft) 
+                #  altitude= 1828.8, # m (6000 ft)
                  T = 276,  #kelvin (based on standard atmosphere at 6000 ft)
                  P = 81.2e3, # pa (based on standard atmosphere at 6000 ft)
                  areaRef=0.1615**2*np.pi/4,  #m^2 0.1615 is diameter of motor
@@ -234,25 +233,30 @@ class Top(om.Group):
         conj_analysis.connect('aero_mesh.Xsurf_allIsothermalWalls', ['geo_heatedwalls.pts'])
 
         conj_analysis.connect('geo_allwalls.deformed_pts', ['x_a'])
-        conj_analysis.connect('geo_heatedwalls.deformed_pts', ['cond.x_a'])
         # conj_analysis.connect('aero_mesh.Xsurf_allIsothermalWalls', ['cond.x_a'])
 
 
 
         conj_analysis.add_subsystem('aero',
-                          AdflowGroup(aero_problem = ap_cruise, 
-                           solver_options = aero_options, 
+                          AdflowGroup(aero_problem = ap_cruise,
+                           solver_options = aero_options,
                            group_options = {
                                'mesh': False,
                                'deformer': True,
                                'funcs':True
                            }),
                            promotes=['x_a'])
+
+
+        conj_analysis.connect('geo_heatedwalls.deformed_pts', ['cond.x_a'])
         mda = Analysis()
 
+        mda.add_subsystem('cond',
+                          ConductionNodal())
+
         mda.add_subsystem('conv',
-                          AdflowGroup(aero_problem = ap_runup, 
-                           solver_options = aero_options, 
+                          AdflowGroup(aero_problem = ap_runup,
+                           solver_options = aero_options,
                            group_options = {
                                'mesh': False,
                                'deformer': True,
@@ -263,32 +267,30 @@ class Top(om.Group):
                         #    promotes=['wall_temp', 'x_a'])
                            # I'm explicitly promoteing the aero problem var, but it would
                            # be better to do this through a tag
-                           
-        mda.add_subsystem('cond',
-                          ConductionNodal())
-        
+
+
         mda.connect('cond.T_surf', ['wall_temp'])
         mda.connect('conv.heatflux', ['cond.heatflux'])
 
 
-        mda.nonlinear_solver=om.NonlinearBlockGS(maxiter=10)
-        mda.linear_solver = om.LinearBlockGS(maxiter=20)
-        mda.nonlinear_solver.options['iprint']=2
         # solver options
+        mda.nonlinear_solver=om.NonlinearBlockGS(maxiter=20)
         mda.nonlinear_solver.options['use_aitken'] = args.aitken
-        mda.nonlinear_solver.options['atol'] = 1e-4
-        mda.nonlinear_solver.options['rtol'] = 1e-20
-        mda.linear_solver.options['atol'] = 1e-4
-        mda.nonlinear_solver.options['rtol'] = 1e-20
+        mda.nonlinear_solver.options['atol'] = 1e-20
+        mda.nonlinear_solver.options['rtol'] = 1e-10
+        mda.nonlinear_solver.options['iprint']=2
+
+        # mda.linear_solver = om.PETScKrylov()
+        mda.linear_solver = om.LinearBlockGS(maxiter=100)
+        # mda.linear_solver.options['use_aitken'] = args.aitken
+
+        # mda.linear_solver.options['atol'] = 1e-4
+        mda.nonlinear_solver.options['atol'] = 1e-20
+        mda.linear_solver.options['rtol'] = 1e-10
         mda.linear_solver.options['iprint'] = 2
 
 
         conj_analysis.add_subsystem('mda', mda, promotes=['*'])
-
-
-        # conj_analysis.add_subsystem('aero_funcs',AdflowFunctions(solver_options=aero_options, aero_problem=ap0), promotes=['*'])
-        # conj_analysis.add_subsystem('struct_funcs',TacsFunctions(solver_options=struct_options), promotes=['*'])
-        # conj_analysis.add_subsystem('struct_mass',TacsMass(solver_options=struct_options), promotes=['*'])
 
         self.add_subsystem('conj_hxfer', conj_analysis)
 
@@ -315,7 +317,7 @@ if args.driver == 'scipy':
     #prob.driver = om.ScipyOptimizeDriver(debug_print=['ln_cons','nl_cons','objs','totals'])
     prob.driver = om.ScipyOptimizeDriver()
     prob.driver.options['optimizer'] = 'SLSQP'
-    prob.driver.options['tol'] = 1e-3
+    prob.driver.options['tol'] = 1e-10
     prob.driver.options['disp'] = True
 
     prob.driver.recording_options['includes'] = ['*']
@@ -325,7 +327,7 @@ if args.driver == 'scipy':
     prob.driver.options['debug_print'] =['desvars']
 
 elif args.driver == 'snopt':
-    
+
     prob.driver = om.pyOptSparseDriver()
     prob.driver.options['optimizer'] = "SNOPT"
     prob.driver.options['debug_print'] =['desvars', 'ln_cons', 'nl_cons', 'objs']
@@ -354,7 +356,9 @@ elif args.driver == 'snopt':
 # recorder = om.SqliteRecorder("%s/cases.sql"%args.output_dir)
 # prob.driver.add_recorder(recorder)
 prob.model.add_design_var('scale_sections',lower=0.7, upper=1.6)
-prob.model.add_objective('conj_hxfer.aero.cd',ref=1e-3)
+
+
+prob.model.add_objective('conj_hxfer.aero.cd',ref=1e-1)
 prob.model.add_constraint('conj_hxfer.totheattransfer', lower=-1*args.min_heatxfer*1.5,  upper=-1*args.min_heatxfer, scaler=1e2)
 
 
@@ -368,7 +372,6 @@ prob.driver.recording_options['record_desvars'] = True
 prob.driver.recording_options['record_responses'] = False
 prob.driver.recording_options['record_objectives'] = True
 prob.setup(mode='rev')
-
 # ss = prob.get_val('scale_sections', get_remote=True)
 # prob.set_val('scale_sections', np.arange(ss.size)*0.1 + 0.7 )
 
@@ -376,6 +379,10 @@ prob.setup(mode='rev')
 om.n2(prob, show_browser=False, outfile='%s/mphys_conj_opt.html'%(args.output_dir))
 if args.task == 'analysis':
     prob.run_model()
+
+    # data = prob.check_partials(includes='conj_hxfer.mda.conv')
+    data = prob.check_totals(step=1e-4, form='backward')
+    quit()
     # prob.model.list_outputs()
     if MPI.COMM_WORLD.rank == 0:
     #     print("Scenario 0")

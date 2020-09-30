@@ -57,18 +57,18 @@ class Top(om.Group):
             # 'printTiming': False,
 
             # Common Parameters
-            'gridFile': 'naca0012_hot_rans.cgns',
+            'gridFile': 'naca0012_hot_L2.cgns',
             'outputDirectory': './',
             # 'discretization': 'upwind',
 
             # 'oversetupdatemode': 'full',
             'volumevariables': ['temp'],
             'surfacevariables': ['cf', 'vx', 'vy', 'vz', 'temp', 'heattransfercoef', 'heatflux'],
-            'monitorVariables':	['resturb', 'yplus', 'heatflux'],
+            'monitorVariables':	['resturb', 'yplus', 'totheattransfer'],
             # Physics Parameters
             # 'equationType': 'laminar NS',
             'equationType': 'rans',
-            # 'vis2':0.0,
+            # 'vis2':0.0,e
             'liftIndex': 2,
             'CFL': 1.0,
             # 'smoother': 'DADI',
@@ -82,7 +82,7 @@ class Top(om.Group):
             # NK parameters
             'useNKSolver': True,
             'nkswitchtol': 1e-5,
-            
+
             'rkreset': False,
             'nrkreset': 40,
             'MGCycle': 'sg',
@@ -140,16 +140,16 @@ class Top(om.Group):
 
         group = 'heated_wall'
         BCVar = 'Temperature'
-        
+
         CFDSolver = ADFLOW(options=aero_options)
         bc_data = CFDSolver.getBCData()
         print(MPI.COMM_WORLD.rank, bc_data.getBCArraysFlatData(BCVar, familyGroup=group))
         ap_runup.setBCVar('Temperature', np.ones(bc_data.getBCArraysFlatData(BCVar, familyGroup=group).size)*300.0, group)
         ap_runup.addDV('Temperature', familyGroup=group, name='wall_temp', units='K')
-        
 
-        conv_sys = AdflowGroup(aero_problem = ap_runup, 
-                    solver_options = aero_options, 
+
+        conv_sys = AdflowGroup(aero_problem = ap_runup,
+                    solver_options = aero_options,
                     group_options = {
                         'mesh': False,
                         'deformer': True,
@@ -197,14 +197,14 @@ class Top(om.Group):
             unique_x = list(unique_x)
             unique_x.sort()
 
-            plate_surface = [] 
+            plate_surface = []
             mask = []
             lower_mask = []
             upper_mask = []
 
             for x in unique_x:
                 mask_sec = np.where(Xpts_array[:, 0] == x)[0]
-                
+
 
                 # find min and max y points
                 max_mask = np.where(Xpts_array[mask_sec,1] == np.max(Xpts_array[mask_sec, 1]))[0]
@@ -214,7 +214,7 @@ class Top(om.Group):
                 upper_mask.extend(mask_sec[max_mask])
 
                 # mask.extend(mask_sec[min_mask], mask_sec[max_mask])
-                
+
                 # plate_surface.extend([lower_mask, upper_mask])
                 # mapping.extend
 
@@ -257,7 +257,7 @@ class Top(om.Group):
                 TACS.OUTPUT_NODES |
                 TACS.OUTPUT_DISPLACEMENTS |
                 TACS.OUTPUT_STRAINS)
-            
+
 
             f5 = TACS.ToFH5(tacs, TACS.SOLID_ELEMENT, flag)
             fid = 'tacs_iter_%04d.f5' %f5_writer.count
@@ -286,7 +286,7 @@ class Top(om.Group):
                                    'mass':False,
                                    'funcs':False
                                })
-       
+
 
         ################################################################################
         # TRANSFER
@@ -308,7 +308,7 @@ class Top(om.Group):
         dvs.add_output('alpha', val=3.725)
         # self.connect('alpha', ['conj.alpha'])
 
-   
+
         # create the multiphysics analysis group.
 
         conj_sys = Analysis()
@@ -317,12 +317,12 @@ class Top(om.Group):
 
 
         mda = Analysis()
-        mda.add_subsystem('conv', conv_sys, promotes=['q', 'x_g', 'x_a'])    
+        mda.add_subsystem('conv', conv_sys, promotes=['q', 'x_g', 'x_a'])
 
         mda.add_subsystem('heat_xfer_xfer', heatflux_xfer_sys, promotes=['x_conv0', 'x_cond0'])
         mda.connect('conv.heatflux', ['heat_xfer_xfer.heat_xfer_conv'])
         mda.connect('heat_xfer_xfer.heat_xfer_cond', ['cond.heat_xfer'])
-        
+
         mda.add_subsystem('cond', cond_sys, promotes=['x_s0'])
         mda.connect('cond.temp', ['temp_xfer.temp_cond'])
 
@@ -331,7 +331,7 @@ class Top(om.Group):
 
 
 
-        
+
 
 
 
@@ -360,7 +360,7 @@ class Top(om.Group):
         self.add_subsystem('conj', conj_sys)
 
 
-   
+
 ################################################################################
 # OpenMDAO setup
 ################################################################################
