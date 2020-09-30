@@ -40,7 +40,7 @@ class TacsObjsBuilder(ObjBuilder):
 
         pc = TACS.Pc(mat)
 
-        # TODO these should be set as options with a default 
+        # TODO these should be set as options with a default
         subspace = 100
         restarts = 2
         ksp = TACS.KSM(mat, pc, subspace, restarts)
@@ -60,16 +60,16 @@ class TacsMesh(om.ExplicitComponent):
         # self.options.declare('get_tacs', default = None, desc='function to get tacs')
         self.options.declare('check_partials', default=False)
         self.options.declare('solver_options')
-        
+
         self.options['distributed'] = True
 
 
-        
+
         self.objBuilders = [TacsObjsBuilder()]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -155,12 +155,12 @@ class TacsSolver(om.ImplicitComponent):
         self.check_partials = False
 
         self.old_dvs = None
-        
+
         self.objBuilders = [TacsObjsBuilder()]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -376,7 +376,7 @@ class TacsSolver(om.ImplicitComponent):
         res_array[:] = 0.0
 
         self._update_internal(inputs)
-        
+
         if 'Conduction' in self.options['solver_options']:
             heat = self.heat
 
@@ -394,7 +394,7 @@ class TacsSolver(om.ImplicitComponent):
 
 
             ans_array = ans.getArray()
-        
+
             outputs['temp'] = ans_array[self.mapping]
             print(outputs['temp'])
 
@@ -435,16 +435,60 @@ class TacsSolver(om.ImplicitComponent):
 
             res = self.res
             res_array = res.getArray()
-            res_array[:] = d_outputs['u_s']
-            before = res_array.copy()
-            tacs.applyBCs(res)
-            after = res_array.copy()
-            psi_s = self.psi_s
-            gmres.solve(res,psi_s)
-            psi_s_array = psi_s.getArray()
-            tacs.applyBCs(psi_s)
-            d_residuals['u_s'] = psi_s_array.copy()
-            d_residuals['u_s'] -= np.array(after - before,dtype=np.float64)
+
+
+
+
+            if 'Conduction' in self.options['solver_options']:
+
+
+
+                res_array[self.mapping] = d_outputs['temp']
+
+                before = res_array.copy()
+                tacs.setBCs(res)
+                after = res_array.copy()
+                psi_s = self.psi_s
+                gmres.solve(res,psi_s)
+
+                psi_s_array = psi_s.getArray()
+                tacs.setBCs(psi_s)
+
+                import ipdb; ipdb.set_trace()
+                d_residuals['temp'] = psi_s_array.copy()[self.mapping]
+
+                print('inputs seed', d_outputs['temp'])
+                print(d_residuals['temp'] - np.array(after - before,dtype=np.float64)[self.mapping])
+                print()
+                d_residuals['temp'] -= np.array(after - before,dtype=np.float64)[self.mapping]
+                print(d_residuals['temp'])
+
+            else:
+
+
+                res_array[:] = d_outputs['u_s']
+                before = res_array.copy()
+                tacs.applyBCs(res)
+                after = res_array.copy()
+                psi_s = self.psi_s
+                gmres.solve(res,psi_s)
+                psi_s_array = psi_s.getArray()
+                tacs.applyBCs(psi_s)
+                d_residuals['u_s'] = psi_s_array.copy()
+                d_residuals['u_s'] -= np.array(after - before,dtype=np.float64)
+
+
+                # # solve the linear system
+                # force_array = force.getArray()
+                # force_array[:] = inputs['f_s']
+                # tacs.applyBCs(force)
+
+                # gmres.solve(force, ans)
+                # ans_array = ans.getArray()
+                # outputs['u_s'] = ans_array[:]
+                # tacs.setVariables(ans)
+
+
 
     def apply_linear(self,inputs,outputs,d_inputs,d_outputs,d_residuals,mode):
         self._update_internal(inputs,outputs)
@@ -455,6 +499,68 @@ class TacsSolver(om.ImplicitComponent):
                 raise ValueError('forward mode requested but not implemented')
 
         if mode == 'rev':
+            if 'temp' in d_residuals:
+                tacs = self.tacs
+
+                res  = self.res
+                res_array = res.getArray()
+
+                ans  = self.ans
+                ans_array = ans.getArray()
+
+                psi = tacs.createVec()
+                psi_array = psi.getArray()
+                psi_array[self.mapping] = d_residuals['temp']
+
+                before = psi_array.copy()
+                tacs.applyBCs(psi)
+                after = psi_array.copy()
+
+                if 'temp' in d_outputs:
+
+                    ans_array[self.mapping] = outputs['temp']
+                    tacs.applyBCs(ans)
+                    tacs.setVariables(ans)
+
+                    # if nonsymmetric, we need to form the transpose Jacobian
+                    #if self._design_vector_changed(inputs['dv_struct']) or not self.transposed:
+                    #    alpha = 1.0
+                    #    beta  = 0.0
+                    #    gamma = 0.0
+                    #    tacs.assembleJacobian(alpha,beta,gamma,res,self.mat,matOr=TACS.PY_TRANSPOSE)
+                    #    pc.factor()
+                    #    self.transposed=True
+
+                    res_array[self.mapping] = 0.0
+
+                    self.mat.mult(psi,res)
+                    # tacs.applyBCs(res)
+
+                    d_outputs['temp'] += np.array(res_array[self.mapping],dtype=float)
+                    d_outputs['temp'] -= np.array(after - before,dtype=np.float64)
+
+                if 'heat_xfer' in d_inputs:
+                    d_inputs['heat_xfer'] -= np.array(psi_array[self.mapping],dtype=float)
+
+                if 'x_s0' in d_inputs:
+                    xpt_sens = self.xpt_sens
+                    xpt_sens_array = xpt_sens.getArray()
+
+                    tacs.addAdjointResXptSensProducts([psi], [xpt_sens])
+
+                    d_inputs['x_s0'] += np.array(xpt_sens_array[:],dtype=float)
+
+                # if 'dv_struct' in d_inputs:
+                #     adj_res_product  = np.zeros(d_inputs['dv_struct'].size,dtype=TACS.dtype)
+                #     self.tacs.evalAdjointResProduct(psi, adj_res_product)
+
+                #     # TACS has already done a parallel sum (mpi allreduce) so
+                #     # only add the product on one rank
+                #     if self.comm.rank == 0:
+                #         d_inputs['dv_struct'] +=  np.array(adj_res_product,dtype=float)
+
+
+
             if 'u_s' in d_residuals:
                 tacs = self.tacs
 
@@ -545,7 +651,7 @@ class TacsFunctions(om.ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -705,9 +811,9 @@ class TacsMass(om.ExplicitComponent):
     def initialize(self):
         self.options.declare('solver_options')
         self.options.declare('check_partials', default=False)
-        
+
         self.options['distributed'] = True
-        
+
         self.ans = None
         self.tacs = None
 
@@ -717,7 +823,7 @@ class TacsMass(om.ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -817,7 +923,7 @@ class PrescribedLoad(om.ExplicitComponent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+
         for b in self.objBuilders:
             b.options = self.options['solver_options']
 
@@ -895,7 +1001,7 @@ class TACSGroup(Analysis):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # set given options 
+        # set given options
         self.check_partials = self.options['check_partials']
         self.group_options.update(self.options['group_options'])
 
@@ -912,7 +1018,7 @@ class TACSGroup(Analysis):
                             promotes=['*']) # we can connect things implicitly through promotes
                                             # because we already know the inputs and outputs of each
                                             # components
-        
+
 
 
 
