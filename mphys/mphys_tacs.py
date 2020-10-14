@@ -396,7 +396,6 @@ class TacsSolver(om.ImplicitComponent):
             ans_array = ans.getArray()
 
             outputs['temp'] = ans_array[self.mapping]
-            print(outputs['temp'])
 
             if self.f5_writer is not None:
                 self.f5_writer(self.tacs)
@@ -451,16 +450,10 @@ class TacsSolver(om.ImplicitComponent):
                 gmres.solve(res,psi_s)
 
                 psi_s_array = psi_s.getArray()
-                # tacs.applyBCs(psi_s)
                 tacs.applyBCs(psi_s)
 
-
-                # print('inputs seed', d_outputs['temp'])
-                print('after - before', np.array(after - before,dtype=np.float64)[self.mapping])
-                # print()
                 d_residuals['temp'] = psi_s_array.copy()[self.mapping]
                 d_residuals['temp'] -= np.array(after - before,dtype=np.float64)[self.mapping]
-                # print(d_residuals['temp'])
 
             else:
 
@@ -541,7 +534,6 @@ class TacsSolver(om.ImplicitComponent):
                     d_inputs['heat_xfer'] -= np.array(psi_array[self.mapping],dtype=float)
 
                 if 'x_s0' in d_inputs:
-                    # xpt_sens = self.xpt_sens
 
                     xpt_sens   = tacs.createNodeVec()
                     xpt_sens_array = xpt_sens.getArray()
