@@ -442,26 +442,25 @@ class TacsSolver(om.ImplicitComponent):
             if 'Conduction' in self.options['solver_options']:
 
 
-
                 res_array[self.mapping] = d_outputs['temp']
 
                 before = res_array.copy()
-                tacs.setBCs(res)
+                tacs.applyBCs(res)
                 after = res_array.copy()
                 psi_s = self.psi_s
                 gmres.solve(res,psi_s)
 
                 psi_s_array = psi_s.getArray()
-                tacs.setBCs(psi_s)
+                # tacs.applyBCs(psi_s)
+                tacs.applyBCs(psi_s)
 
-                import ipdb; ipdb.set_trace()
+
+                # print('inputs seed', d_outputs['temp'])
+                print('after - before', np.array(after - before,dtype=np.float64)[self.mapping])
+                # print()
                 d_residuals['temp'] = psi_s_array.copy()[self.mapping]
-
-                print('inputs seed', d_outputs['temp'])
-                print(d_residuals['temp'] - np.array(after - before,dtype=np.float64)[self.mapping])
-                print()
                 d_residuals['temp'] -= np.array(after - before,dtype=np.float64)[self.mapping]
-                print(d_residuals['temp'])
+                # print(d_residuals['temp'])
 
             else:
 
@@ -531,8 +530,7 @@ class TacsSolver(om.ImplicitComponent):
                     #    pc.factor()
                     #    self.transposed=True
 
-                    res_array[self.mapping] = 0.0
-
+                    res_array[:] = 0.0
                     self.mat.mult(psi,res)
                     # tacs.applyBCs(res)
 
@@ -543,22 +541,15 @@ class TacsSolver(om.ImplicitComponent):
                     d_inputs['heat_xfer'] -= np.array(psi_array[self.mapping],dtype=float)
 
                 if 'x_s0' in d_inputs:
-                    xpt_sens = self.xpt_sens
+                    # xpt_sens = self.xpt_sens
+
+                    xpt_sens   = tacs.createNodeVec()
                     xpt_sens_array = xpt_sens.getArray()
+
 
                     tacs.addAdjointResXptSensProducts([psi], [xpt_sens])
 
                     d_inputs['x_s0'] += np.array(xpt_sens_array[:],dtype=float)
-
-                # if 'dv_struct' in d_inputs:
-                #     adj_res_product  = np.zeros(d_inputs['dv_struct'].size,dtype=TACS.dtype)
-                #     self.tacs.evalAdjointResProduct(psi, adj_res_product)
-
-                #     # TACS has already done a parallel sum (mpi allreduce) so
-                #     # only add the product on one rank
-                #     if self.comm.rank == 0:
-                #         d_inputs['dv_struct'] +=  np.array(adj_res_product,dtype=float)
-
 
 
             if 'u_s' in d_residuals:
