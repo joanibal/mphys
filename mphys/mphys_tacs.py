@@ -33,6 +33,8 @@ class TacsMesh(om.ExplicitComponent):
         n1 = np.sum(n_list[:irank])
         n2 = np.sum(n_list[:irank+1])
 
+        node_size  =     self.xpts.getArray().size
+
         self.add_input('x_s0_points', shape=node_size, src_indices=np.arange(n1, n2, dtype=int), desc='structural node coordinates')
 
         # return the promoted name and coordinates
@@ -81,6 +83,7 @@ class TacsSolver(om.ImplicitComponent):
         self.check_partials = False
 
         self.old_dvs = None
+        self.old_xpts = None
 
     def setup(self):
         self.check_partials = self.options['check_partials']
@@ -149,16 +152,26 @@ class TacsSolver(om.ImplicitComponent):
         return self.solver_dict['get_funcs']
 
     def _need_update(self,inputs):
+        ret_val = False
         if self.old_dvs is None:
             self.old_dvs = inputs['dv_struct'].copy()
-            return True
+            ret_val =  True
+        else:
+            for dv, dv_old in zip(inputs['dv_struct'],self.old_dvs):
+                if np.abs(dv - dv_old) > 1e-10:
+                    self.old_dvs = inputs['dv_struct'].copy()
+                    ret_val = True
 
-        for dv, dv_old in zip(inputs['dv_struct'],self.old_dvs):
-            if np.abs(dv - dv_old) > 1e-10:
-                self.old_dvs = inputs['dv_struct'].copy()
-                return True
+        if self.old_xpts is None:
+            self.old_xpts = inputs['x_s0'].copy()
+            ret_val =  True
+        else:
+            for xpts, xpts_old in zip(inputs['x_s0'],self.old_xpts):
+                if np.abs(xpts - xpts_old) > 1e-10:
+                    self.old_xpts = inputs['x_s0'].copy()
+                    ret_val = True
 
-        return False
+        return ret_val
 
     def _update_internal(self,inputs,outputs=None):
         if self._need_update(inputs):
