@@ -2,12 +2,11 @@ from __future__ import division, print_function
 import numpy as np
 
 import openmdao.api as om
-from tacs import TACS,functions
+from tacs_cs import TACS,functions
 
 from .base_classes import SolverObjectBasedSystem
 from .analysis import Analysis
 
-from tacs import TACS
 from .base_classes import  ObjBuilder, SysBuilder
 
 
@@ -397,6 +396,7 @@ class TacsSolver(om.ImplicitComponent):
 
             outputs['temp'] = ans_array[self.mapping]
 
+            print(outputs['temp'].imag/1e-40)
             if self.f5_writer is not None:
                 self.f5_writer(self.tacs)
 
@@ -448,11 +448,16 @@ class TacsSolver(om.ImplicitComponent):
                 after = res_array.copy()
                 psi_s = self.psi_s
                 gmres.solve(res,psi_s)
+                print('0:', np.linalg.norm(psi_s.getArray()))
 
                 psi_s_array = psi_s.getArray()
                 tacs.applyBCs(psi_s)
-
                 d_residuals['temp'] = psi_s_array.copy()[self.mapping]
+
+                #HACK
+                self.adjoint = psi_s_array.copy()
+
+                print('1:',np.linalg.norm(d_residuals['temp']),np.linalg.norm(self.adjoint) )
                 d_residuals['temp'] -= np.array(after - before,dtype=np.float64)[self.mapping]
 
             else:
@@ -502,7 +507,11 @@ class TacsSolver(om.ImplicitComponent):
 
                 psi = tacs.createVec()
                 psi_array = psi.getArray()
-                psi_array[self.mapping] = d_residuals['temp']
+
+                #HACK
+                psi_array[:] = self.adjoint
+
+                print(np.linalg.norm(psi.getArray()))
 
                 before = psi_array.copy()
                 tacs.applyBCs(psi)
@@ -536,12 +545,16 @@ class TacsSolver(om.ImplicitComponent):
                 if 'x_s0' in d_inputs:
 
                     xpt_sens   = tacs.createNodeVec()
+                    xpt_sens.zeroEntries()
+                    # print(xpt_sens_array)
+                    print(np.linalg.norm(psi.getArray()))
+
+                    tacs.addAdjointResXptSensProducts([psi], [xpt_sens], alpha=-1)
                     xpt_sens_array = xpt_sens.getArray()
+                    print(np.linalg.norm(xpt_sens.getArray()))
+                    # import ipdb; ipdb.set_trace()
 
-
-                    tacs.addAdjointResXptSensProducts([psi], [xpt_sens])
-
-                    d_inputs['x_s0'] += np.array(xpt_sens_array[:],dtype=float)
+                    d_inputs['x_s0'] -= np.array(xpt_sens_array[:],dtype=float)
 
 
             if 'u_s' in d_residuals:
