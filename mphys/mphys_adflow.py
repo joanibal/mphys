@@ -729,9 +729,9 @@ class AdflowHeatTransfer(ExplicitComponent):
 
         #
 
-        outputs['heatflux'] = solver.getHeatFluxes().flatten(order='C')
+        outputs['heatflux'] = solver.getHeatXferRates().flatten(order='C')
         print(outputs['heatflux'] )
-        outputs['heatflux'] = solver.getHeatFluxes().flatten(order='C')
+        outputs['heatflux'] = solver.getHeatXferRates().flatten(order='C')
         print(outputs['heatflux'] )
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
