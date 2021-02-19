@@ -1,4 +1,3 @@
-
 import numpy as np
 import pprint
 import copy
@@ -6,96 +5,238 @@ import copy
 from collections import OrderedDict
 from baseclasses import AeroProblem
 
-from adflow import ADFLOW
-from idwarp import USMesh
+from adflow import ADFLOW, ADFLOW_C
+from idwarp import USMesh, USMesh_C
 
 from openmdao.api import Group, ImplicitComponent, ExplicitComponent
 
 from adflow.om_utils import get_dvs_and_cons
 
-from .base_classes import  ObjBuilder, SysBuilder
-from .analysis import Analysis
+from .base_classes import ObjBuilder, SysBuilder
+from .analysis import Analysis, SharedObjGroup
 
 
 class AdflowObjBuilder(ObjBuilder):
+    def __init__(self, options, complexify=False):
+        super().__init__(options)
+        self.complexify = complexify
 
-    def __init__(self):
-        super().__init__(ADFLOW)
+        self.obj_built = False
 
-    def build_obj(self, comm):
-        CFDSolver =  ADFLOW(options=self.options, comm=comm)
+    def get_obj(self, comm):
 
-        # TODO there should be a sperate set of mesh options passed to USMesh
-        # TODO the user should be able to choose the kind of mesh
-        mesh = USMesh(options=self.options)
-        CFDSolver.setMesh(mesh)
-        return CFDSolver
+        if not self.obj_built:
+            # TODO the user should be able to choose the kind of mesh
+            if self.complexify:
+                mesh = USMesh_C(options=self.options["idwarp"], comm=comm)
+                CFDSolver = ADFLOW_C(options=self.options["adflow"], comm=comm)
+            else:
+                mesh = USMesh(options=self.options["idwarp"], comm=comm)
+                CFDSolver = ADFLOW(options=self.options["adflow"], comm=comm)
+
+            CFDSolver.setMesh(mesh)
+            self.solver = CFDSolver
+
+            self.obj_built = True
+
+        return self.solver
+
+
+class AeroProblemMixIns:
+    """
+    a set of methods common the the components in the ADflow Group which use
+    aeroproblems
+    """
+
+    def set_ap_design_vars(self, ap,  inputs):
+
+        ap_vars, _ = get_dvs_and_cons(ap=ap)
+        tmp = {}
+
+        for (args, kwargs) in ap_vars:
+            name = args[0]
+            tmp[name] = inputs[name]
+
+        print(tmp)
+        ap.setDesignVars(tmp)
+
+    def add_ap_inputs(self, ap):
+        """The design variables of the aero problem are set as inputs
+        to the component
+
+        Parameters
+        ----------
+        ap : AeroProblem
+            The AeroProblem from MACH baseclasses hold the information about
+            flow conditions which may be a design variables
+        """
+        # self.ap = ap
+
+        ap_vars, _ = get_dvs_and_cons(ap=ap)
+        irank = self.comm.rank
+
+        if self.comm.rank == 0:
+            print("adding ap var inputs")
+        for (args, kwargs) in ap_vars:
+            name = args[0]
+            size = args[1]
+
+            val = kwargs["value"]
+
+            # the value of the ap variable may be scattered across the procs,
+            # so we need to determine the src indices of the values we have
+            s_list = self.comm.allgather(size)
+            s1 = np.sum(s_list[:irank])
+            s2 = np.sum(s_list[: irank + 1])
+
+            self.add_input(name, val=val, src_indices=np.arange(s1, s2, dtype=int), units=kwargs["units"])
+            # if self.comm.rank == 0:
+            print(irank, name, size, s1, s2)
+
+    def add_ap_outputs(self, ap, units=None):
+        # this is the external function to set the ap to this component
+
+        if units is None:
+            units = {}
+
+        for f_name in ap.evalFuncs:
+
+            if self.comm.rank == 0:
+                print("adding adflow func as output: {}".format(f_name))
+
+            if f_name in units:
+                self.add_output(f_name, shape=1, units=units[f_name])
+            else:
+                self.add_output(f_name, shape=1)
+            # self.add_output(f_name, shape=1, units=units)
+
 
 
 class AdflowMesh(ExplicitComponent):
     """
-    Component to get the partitioned initial surface mesh coordinates
+    Component to get the partitioned initial surface mesh coordinates from an
+    adflow object
 
     """
+
     def initialize(self):
-        self.options.declare('solver_options')
+        # self.options.declare('solver_options', default= {})
 
-        self.options.declare('family_groups', default=['allWalls'])
-
-        self.options['distributed'] = True
-
-        self.objBuilders = [AdflowObjBuilder()]
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
+        self.options.declare("family_groups", default=["allWalls"])
+        self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
+        self.options["distributed"] = True
 
     def setup(self):
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
 
-        self.solver = self.objBuilders[0].obj
+        self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
+
+        for famGroup in self.options["family_groups"]:
+            coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order="C")
+            self.add_output("Xsurf_%s" % (famGroup), val=coords, desc="surface points for %s" % (famGroup))
+
+    # def mphys_add_coordinate_input(self):
+    #     local_size = self.x_a0.size
+    #     n_list = self.comm.allgather(local_size)
+    #     irank  = self.comm.rank
+
+    #     n1 = np.sum(n_list[:irank])
+    #     n2 = np.sum(n_list[:irank+1])
+
+    #     self.add_input('x_a0_points',shape=local_size,src_indices=np.arange(n1,n2,dtype=int),desc='aerodynamic surface with geom changes')
+
+    #     # return the promoted name and coordinates
+    #     return 'x_a0_points', self.x_a0
+
+    # def compute(self,inputs,outputs):
+    #     if 'x_a0_points' in inputs:
+    #         outputs['x_a0'] = inputs['x_a0_points']
+    #     else:
+    #         # outputs['x_a0'] = self.x_a0
+    #         pass
+
+    # def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
+    #     if mode == 'fwd':
+    #         if 'x_a0_points' in d_inputs:
+    #             d_outputs['x_a0'] += d_inputs['x_a0_points']
+    #     elif mode == 'rev':
+    #         if 'x_a0_points' in d_inputs:
+    #             d_inputs['x_a0_points'] += d_outputs['x_a0']
 
 
-        for famGroup in self.options['family_groups']:
+class AdflowMapper(ExplicitComponent):
+    """
+    Component to get the partitioned surface mesh coordinates of different sub families
 
+    """
 
-            coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order='C')
-            coord_size = coords.size
+    def initialize(self):
+        # self.options.declare('solver_options', default= {})
 
-            self.add_output('Xsurf_%s'%(famGroup), val=coords, desc='initial aerodynamic surface node coordinates for %s'%(famGroup))
+        self.options.declare("input_family_group", default=["allWalls"])
+        self.options.declare("output_family_groups", default=["allWalls"])
 
+        self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
+        self.options["distributed"] = True
 
-    def mphys_add_coordinate_input(self):
-        local_size = self.x_a0.size
-        n_list = self.comm.allgather(local_size)
-        irank  = self.comm.rank
+    def setup(self):
 
-        n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
+        self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
 
-        self.add_input('x_a0_points',shape=local_size,src_indices=np.arange(n1,n2,dtype=int),desc='aerodynamic surface with geom changes')
+        in_famGroup = self.options["input_family_group"]
+        coords = self.solver.getSurfaceCoordinates(groupName=in_famGroup).flatten(order="C")
+        self.add_input("Xsurf_%s" % (in_famGroup), val=coords, desc="surface points for %s" % (in_famGroup))
 
-        # return the promoted name and coordinates
-        return 'x_a0_points', self.x_a0
+        for famGroup in self.options["output_family_groups"]:
+            coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order="C")
+            self.add_output("Xsurf_%s" % (famGroup), val=coords, desc="surface points for %s" % (famGroup))
 
-    def compute(self,inputs,outputs):
-        if 'x_a0_points' in inputs:
-            outputs['x_a0'] = inputs['x_a0_points']
-        else:
-            # outputs['x_a0'] = self.x_a0
-            pass
+    def compute(self, inputs, outputs):
+
+        in_famGroup = self.options["input_family_group"]
+        in_vec = inputs["Xsurf_%s" % (in_famGroup)]
+        in_vec = in_vec.reshape(in_vec.size // 3, 3)
+        # loop over output families add do the mapping for each
+        for out_famGroup in self.options["output_family_groups"]:
+
+            out_vec = outputs["Xsurf_%s" % (out_famGroup)]
+            out_vec = out_vec.reshape(out_vec.size // 3, 3)
+            # import ipdb; ipdb.set_trace()
+            out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
+            outputs["Xsurf_%s" % (out_famGroup)] = out_vec.flatten(order="C")
+
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
-        if mode == 'fwd':
-            if 'x_a0_points' in d_inputs:
-                d_outputs['x_a0'] += d_inputs['x_a0_points']
-        elif mode == 'rev':
-            if 'x_a0_points' in d_inputs:
-                d_inputs['x_a0_points'] += d_outputs['x_a0']
+
+        in_famGroup = self.options["input_family_group"]
+        in_var_name = "Xsurf_%s" % (in_famGroup)
+
+        if mode == "fwd":
+            in_vec = d_inputs[in_var_name]
+            in_vec = in_vec.reshape(in_vec.size // 3, 3)
+
+            for out_famGroup in self.options["output_family_groups"]:
+                if "Xsurf_%s" % (out_famGroup) in d_outputs:
+                    out_vec = d_outputs["Xsurf_%s" % (out_famGroup)]
+                    out_vec = out_vec.reshape(out_vec.size // 3, 3)
+                    out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
+
+                    d_outputs["Xsurf_%s" % (out_famGroup)] += out_vec.flatten(order="C")
+
+        elif mode == "rev":
+            if in_var_name in d_inputs:
+                for out_famGroup in self.options["output_family_groups"]:
+                    if "Xsurf_%s" % (out_famGroup) in d_outputs:
+                        out_vec = d_outputs["Xsurf_%s" % (out_famGroup)]
+                        out_vec = out_vec.reshape(out_vec.size // 3, 3)
+
+                        in_vec = np.zeros(d_inputs["Xsurf_%s" % (in_famGroup)].shape)
+                        in_vec = in_vec.reshape(in_vec.size // 3, 3)
+
+                        # reverse the mapping!
+                        self.solver.mapVector(out_vec, out_famGroup, in_famGroup, in_vec)
+
+                        self.d_inputs[in_var_name] += in_vec.flatten(order="C")
+
 
 class Geo_Disp(ExplicitComponent):
     """
@@ -103,63 +244,35 @@ class Geo_Disp(ExplicitComponent):
     displacements to the geometry-changed aerodynamic surface
     """
 
-
     def initialize(self):
-        self.options.declare('solver_options')
 
-        self.options['distributed'] = True
-
-
-        self.objBuilders = [AdflowObjBuilder()]
-
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
+        self.options["distributed"] = True
 
     def setup(self):
 
+        # TODO set the val of the input x_a0
+        self.add_input("x_a0", shape_by_conn=True, desc="aerodynamic surface with geom changes")
+        self.add_input("u_a", shape_by_conn=True, desc="aerodynamic surface displacements")
 
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
+        self.add_output("x_a", copy_shape="x_a0", desc="deformed aerodynamic surface")
 
-        self.solver = self.objBuilders[0].obj
+    def compute(self, inputs, outputs):
+        outputs["x_a"] = inputs["x_a0"] + inputs["u_a"]
 
+    def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
+        if mode == "fwd":
+            if "x_a" in d_outputs:
+                if "x_a0" in d_inputs:
+                    d_outputs["x_a"] += d_inputs["x_a0"]
+                if "u_a" in d_inputs:
+                    d_outputs["x_a"] += d_inputs["u_a"]
+        if mode == "rev":
+            if "x_a" in d_outputs:
+                if "x_a0" in d_inputs:
+                    d_inputs["x_a0"] += d_outputs["x_a"]
+                if "u_a" in d_inputs:
+                    d_inputs["u_a"] += d_outputs["x_a"]
 
-
-        aero_nnodes = self.solver.getSurfaceCoordinates().size //3
-        local_size = aero_nnodes * 3
-        n_list = self.comm.allgather(local_size)
-        irank  = self.comm.rank
-
-        n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
-
-        #TODO set the val of the input x_a0
-        self.add_input('x_a0',shape=local_size,src_indices=np.arange(n1,n2,dtype=int),desc='aerodynamic surface with geom changes')
-        self.add_input('u_a', shape=local_size,val=np.zeros(local_size),src_indices=np.arange(n1,n2,dtype=int),desc='aerodynamic surface displacements')
-
-        self.add_output('x_a',shape=local_size,desc='deformed aerodynamic surface')
-
-    def compute(self,inputs,outputs):
-        outputs['x_a'] = inputs['x_a0'] + inputs['u_a']
-
-    def compute_jacvec_product(self,inputs,d_inputs,d_outputs,mode):
-        if mode == 'fwd':
-            if 'x_a' in d_outputs:
-                if 'x_a0' in d_inputs:
-                    d_outputs['x_a'] += d_inputs['x_a0']
-                if 'u_a' in d_inputs:
-                    d_outputs['x_a'] += d_inputs['u_a']
-        if mode == 'rev':
-            if 'x_a' in d_outputs:
-                if 'x_a0' in d_inputs:
-                    d_inputs['x_a0'] += d_outputs['x_a']
-                if 'u_a' in d_inputs:
-                    d_inputs['u_a']  += d_outputs['x_a']
 
 class AdflowWarper(ExplicitComponent):
     """
@@ -168,943 +281,404 @@ class AdflowWarper(ExplicitComponent):
     """
 
     def initialize(self):
-        self.options.declare('solver_options')
+        self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
 
-        self.options['distributed'] = True
-
-
-        self.solver_objects = {'Adflow':None}
-
-        self.objBuilders = [AdflowObjBuilder()]
-
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
+        self.options["distributed"] = True
 
     def setup(self):
 
-
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
-
-        self.solver = self.objBuilders[0].obj
-
-
-
-        self.solver = self.solver
-        # self.add_output('foo', val=1.0)
-        solver = self.solver
-
-        # self.ap_vars,_ = get_dvs_and_cons(ap=ap)
+        self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
 
         # state inputs and outputs
-        local_coords = solver.getSurfaceCoordinates()
+        local_coords = self.solver.getSurfaceCoordinates()
         local_coord_size = local_coords.size
-        local_volume_coord_size = solver.mesh.getSolverGrid().size
+        local_volume_coord_size = self.solver.mesh.getSolverGrid().size
 
         n_list = self.comm.allgather(local_coord_size)
-        irank  = self.comm.rank
+        irank = self.comm.rank
         n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
+        n2 = np.sum(n_list[: irank + 1])
 
-        self.add_input('x_a', src_indices=np.arange(n1,n2,dtype=int),shape=local_coord_size)
+        self.add_input("x_a", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
 
-        self.add_output('x_g', shape=local_volume_coord_size)
-
-        #self.declare_partials(of='x_g', wrt='x_s')
+        self.add_output("x_g", shape=local_volume_coord_size)
 
     def compute(self, inputs, outputs):
 
-        solver = self.solver
-        x_a = inputs['x_a'].reshape((-1,3))
-        solver.setSurfaceCoordinates(x_a)
-        solver.updateGeometryInfo()
-        outputs['x_g'] = solver.mesh.getSolverGrid()
+        x_a = inputs["x_a"].reshape((-1, 3))
+        self.solver.setSurfaceCoordinates(x_a)
+        self.solver.updateGeometryInfo()
+        outputs["x_g"] = self.solver.mesh.getSolverGrid().flatten(order="C")
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
-
-        solver = self.solver
-        if mode == 'fwd':
-            if 'x_g' in d_outputs:
-                if 'x_a' in d_inputs:
-                    dxS = d_inputs['x_a']
+        if mode == "fwd":
+            if "x_g" in d_outputs:
+                if "x_a" in d_inputs:
+                    dxS = d_inputs["x_a"]
                     dxV = self.solver.mesh.warpDerivFwd(dxS)
-                    d_outputs['x_g'] += dxV
+                    d_outputs["x_g"] += dxV
                     print(dxV)
-        elif mode == 'rev':
-            if 'x_g' in d_outputs:
-                if 'x_a' in d_inputs:
-                    dxV = d_outputs['x_g']
+
+        elif mode == "rev":
+            if "x_g" in d_outputs:
+                if "x_a" in d_inputs:
+                    dxV = d_outputs["x_g"]
                     self.solver.mesh.warpDeriv(dxV)
                     dxS = self.solver.mesh.getdXs()
-                    d_inputs['x_a'] += dxS.flatten()
+                    d_inputs["x_a"] += dxS.flatten()
 
-class AdflowSolver(ImplicitComponent):
+
+class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
     """
     OpenMDAO component that wraps the Adflow flow solver
 
     """
 
     def initialize(self):
-        self.options.declare('solver_options')
-        self.options.declare('aero_problem')
-        #self.options.declare('use_OM_KSP', default=False, types=bool,
-        #    desc="uses OpenMDAO's PestcKSP linear solver with Adflow's preconditioner to solve the adjoint.")
+        self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
+        self.options.declare("aero_problem")
 
-        self.options['distributed'] = True
-
-
-        # testing flag used for unit-testing to prevent the call to actually solve
-        # NOT INTENDED FOR USERS!!! FOR TESTING ONLY
-        self._do_solve = True
-
-        self.objBuilders = [AdflowObjBuilder()]
-
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
+        self.options["distributed"] = True
 
     def setup(self):
 
-
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
-
-        self.solver = self.objBuilders[0].obj
-
-
-
-        self.solver =self.solver
-        solver = self.solver
+        self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
 
         # state inputs and outputs
-        local_state_size = solver.getStateSize()
-        local_coord_size = solver.mesh.getSolverGrid().size
+        local_state_size = self.solver.getStateSize()
+        local_coord_size = self.solver.mesh.getSolverGrid().size
 
         n_list = self.comm.allgather(local_coord_size)
-        irank  = self.comm.rank
+        irank = self.comm.rank
         n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
+        n2 = np.sum(n_list[: irank + 1])
 
-        self.add_input('x_g', src_indices=np.arange(n1,n2,dtype=int),shape=local_coord_size)
+        self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
+        self.add_output("q", shape=local_state_size)
 
-        self.add_output('q', shape=local_state_size)
-
-
-        self.set_ap(self.options['aero_problem'])
-
-        #self.declare_partials(of='q', wrt='*')
-
-    def _set_ap(self, inputs):
-        tmp = {}
-        for (args, kwargs) in self.ap_vars:
-            name = args[0]
-            tmp[name] = inputs[name]
-
-        print(tmp)
-        self.ap.setDesignVars(tmp)
-
-
-    def set_ap(self, ap):
-        # this is the external function to set the ap to this component
-        self.ap = ap
-
-        self.ap_vars,_ = get_dvs_and_cons(ap=ap)
-        irank  = self.comm.rank
-
-        # parameter inputs
-        if self.comm.rank == 0:
-            print('adding ap var inputs')
-        for (args, kwargs) in self.ap_vars:
-            name = args[0]
-            size = args[1]
-
-            val = kwargs['value']
-
-
-            s_list = self.comm.allgather(size)
-
-            s1 = np.sum(s_list[:irank])
-            s2 = np.sum(s_list[:irank+1])
-
-            self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
-            # if self.comm.rank == 0:
-            print(irank, name, size, s1, s2)
-
-    def _set_states(self, outputs):
-        self.solver.setStates(outputs['q'])
-
+        self.ap = self.options["aero_problem"]
+        self.add_ap_inputs(self.ap)
 
     def apply_nonlinear(self, inputs, outputs, residuals):
 
-        solver = self.solver
-
-        self._set_states(outputs)
-        self._set_ap(inputs)
+        self.solver.setStates(outputs["q"])
+        self.set_ap_design_vars(self.ap, inputs)
 
         ap = self.ap
 
         # Set the warped mesh
-        #solver.mesh.setSolverGrid(inputs['x_g'])
-        # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
+        self.solver.adflow.warping.setgrid(inputs["x_g"])
 
         # flow residuals
-        residuals['q'] = solver.getResidual(ap)
-
+        residuals["q"] = self.solver.getResidual(ap)
 
     def solve_nonlinear(self, inputs, outputs):
 
-        solver = self.solver
-        ap = self.ap
+        # Set the warped mesh
+        self.solver.adflow.warping.setgrid(inputs["x_g"])
+        self.set_ap_design_vars(self.ap, inputs)
 
-        if self._do_solve:
+        # reset the fail flags
+        self.ap.solveFailed = False  # might need to clear this out?
+        self.ap.fatalFail = False
 
-            # Set the warped mesh
-            #solver.mesh.setSolverGrid(inputs['x_g'])
-            # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
+        self.solver(self.ap)
 
-            self._set_ap(inputs)
-            ap.solveFailed = False # might need to clear this out?
-            ap.fatalFail = False
-
-            solver(ap)
-
-
-        outputs['q'] = solver.getStates()
-
+        outputs["q"] = self.solver.getStates()
 
     def linearize(self, inputs, outputs, residuals):
 
         self.solver._setupAdjoint()
 
-        self._set_ap(inputs)
-        self._set_states(outputs)
-
+        self.set_ap_design_vars(self.ap, inputs)
+        self.solver.setStates(outputs["q"])
 
     def apply_linear(self, inputs, outputs, d_inputs, d_outputs, d_residuals, mode):
 
-        solver = self.solver
-        ap = self.ap
-
-        if mode == 'fwd':
-            if 'q' in d_residuals:
+        if mode == "fwd":
+            if "q" in d_residuals:
                 xDvDot = {}
                 for var_name in d_inputs:
                     xDvDot[var_name] = d_inputs[var_name]
-                if 'x_g' in d_inputs:
-                    xVDot = d_inputs['x_g']
+                if "x_g" in d_inputs:
+                    xVDot = d_inputs["x_g"]
                 else:
                     xVDot = None
-                if 'q' in d_outputs:
-                    wDot = d_outputs['q']
+                if "q" in d_outputs:
+                    wDot = d_outputs["q"]
                 else:
                     wDot = None
 
-                dwdot = solver.computeJacobianVectorProductFwd(xDvDot=xDvDot,
-                                                               xVDot=xVDot,
-                                                               wDot=wDot,
-                                                               residualDeriv=True)
-                d_residuals['q'] += dwdot
+                dwdot = self.solver.computeJacobianVectorProductFwd(
+                    xDvDot=xDvDot, xVDot=xVDot, wDot=wDot, residualDeriv=True
+                )
+                d_residuals["q"] += dwdot
 
-        elif mode == 'rev':
-            if 'q' in d_residuals:
-                resBar = d_residuals['q']
+        elif mode == "rev":
+            if "q" in d_residuals:
+                resBar = d_residuals["q"]
 
-                wBar, xVBar, xDVBar = solver.computeJacobianVectorProductBwd(
-                    resBar=resBar,
-                    wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True)
+                wBar, xVBar, xDVBar = self.solver.computeJacobianVectorProductBwd(
+                    resBar=resBar, wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True
+                )
 
-                if 'q' in d_outputs:
-                    d_outputs['q'] += wBar
+                if "q" in d_outputs:
+                    d_outputs["q"] += wBar
 
-                if 'x_g' in d_inputs:
-                    d_inputs['x_g'] += xVBar
+                if "x_g" in d_inputs:
+                    d_inputs["x_g"] += xVBar
 
                 for dv_name, dv_bar in xDVBar.items():
                     if dv_name in d_inputs:
                         d_inputs[dv_name] += dv_bar.flatten()
 
     def solve_linear(self, d_outputs, d_residuals, mode):
-        solver = self.solver
-        ap = self.ap
-        if mode == 'fwd':
-            d_outputs['q'] += solver.solveDirectForRHS(d_residuals['q'])
-        elif mode == 'rev':
-            #d_residuals['q'] = solver.solveAdjointForRHS(d_outputs['q'])
-            RHS = copy.deepcopy(d_outputs['q'])
-            solver.adflow.adjointapi.solveadjoint(RHS, d_residuals['q'], True)
+        if mode == "fwd":
+            d_outputs["q"] += self.solver.solveDirectForRHS(d_residuals["q"])
+        elif mode == "rev":
+            RHS = copy.deepcopy(d_outputs["q"])
+            self.solver.adflow.adjointapi.solveadjoint(RHS, d_residuals["q"], True)
 
         return True, 0, 0
 
-class AdflowForces(ExplicitComponent):
-    """
-    OpenMDAO component that wraps force integration
 
-    """
-
-
+class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
     def initialize(self):
-        self.options.declare('solver_options')
-        self.options.declare('aero_problem')
-        #self.options.declare('use_OM_KSP', default=False, types=bool,
-        #    desc="uses OpenMDAO's PestcKSP linear solver with Adflow's preconditioner to solve the adjoint.")
+        self.options.declare("aero_problem")
 
-        self.options['distributed'] = True
+        self.options.declare("forces", default=False)
+        self.options.declare("heatxfer", default=False)
 
-        self.objBuilders = [AdflowObjBuilder()]
+        self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
+        self.options["distributed"] = True
 
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
+        self.func_to_units = {
+            "mdot": "kg/s",
+            "mavgptot": "Pa",
+            "mavgps": "Pa",
+            "mavgttot": "degK",
+            "mavgvx": "m/s",
+            "mavgvy": "m/s",
+            "mavgvz": "m/s",
+            "drag": "N",
+            "lift": "N",
+            "dragpressure": "N",
+            "dragviscous": "N",
+            "dragmomentum": "N",
+            "fx": "N",
+            "fy": "N",
+            "fz": "N",
+            "forcexpressure": "N",
+            "forceypressure": "N",
+            "forcezpressure": "N",
+            "forcexviscous": "N",
+            "forceyviscous": "N",
+            "forcezviscous": "N",
+            "forcexmomentum": "N",
+            "forceymomentum": "N",
+            "forcezmomentum": "N",
+            "flowpower": "W",
+            "area": "m**2",
+            "totheatflux": "W/m**2",
+        }
 
     def setup(self):
 
+        self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
 
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
-
-        self.solver = self.objBuilders[0].obj
-
-
-
-
-        solver = self.solver
-
-        local_state_size = solver.getStateSize()
-        local_coord_size = solver.mesh.getSolverGrid().size
+        local_state_size = self.solver.getStateSize()
+        local_coord_size = self.solver.mesh.getSolverGrid().size
         s_list = self.comm.allgather(local_state_size)
         n_list = self.comm.allgather(local_coord_size)
-        irank  = self.comm.rank
+        irank = self.comm.rank
 
         s1 = np.sum(s_list[:irank])
-        s2 = np.sum(s_list[:irank+1])
+        s2 = np.sum(s_list[: irank + 1])
         n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
+        n2 = np.sum(n_list[: irank + 1])
 
-        self.add_input('x_g', src_indices=np.arange(n1,n2,dtype=int), shape=local_coord_size)
-        self.add_input('q', src_indices=np.arange(s1,s2,dtype=int), shape=local_state_size)
+        self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
+        self.add_input("q", src_indices=np.arange(s1, s2, dtype=int), shape=local_state_size)
 
-        local_surface_coord_size = solver.mesh.getSurfaceCoordinates().size
-        self.add_output('f_a', shape=local_surface_coord_size)
+        self.ap = self.options["aero_problem"]
+        self.add_ap_inputs(self.ap)
+        self.add_ap_outputs(self.ap, self.func_to_units)
 
+        if self.options["forces"]:
+            local_surface_coord_size = self.solver._getSurfaceSize(self.solver.allWallsGroup)
+            self.add_output("f_a", shape=local_surface_coord_size)
+        if self.options["heatxfer"]:
+            local_nodes, nCells = self.solver._getSurfaceSize(self.solver.allIsothermalWallsGroup)
 
-        self.set_ap(self.options['aero_problem'])
+            self.add_output("heatflux", val=np.ones(local_nodes) * 0, shape=local_nodes, units="W/m**2")
 
-        # self.declare_partials(of='f_a', wrt='*')
-
-    def _set_ap(self, inputs):
-        tmp = {}
-        for (args, kwargs) in self.ap_vars:
-            name = args[0]
-            tmp[name] = inputs[name]
-
-        self.ap.setDesignVars(tmp)
-
-    def set_ap(self, ap):
-        # this is the external function to set the ap to this component
-        self.ap = ap
-
-        self.ap_vars,_ = get_dvs_and_cons(ap=ap)
-        irank  = self.comm.rank
-
-        # parameter inputs
-        if self.comm.rank == 0:
-            print('adding ap var inputs')
-        for (args, kwargs) in self.ap_vars:
-            name = args[0]
-            size = args[1]
-            val = kwargs['value']
-
-
-            s_list = self.comm.allgather(size)
-
-            s1 = np.sum(s_list[:irank])
-            s2 = np.sum(s_list[:irank+1])
-
-            self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
-            if self.comm.rank == 0:
-                print(irank, name, size, s1, s2)
-
-
-    def _set_states(self, inputs):
-        self.solver.setStates(inputs['q'])
-
-    def compute(self, inputs, outputs):
-
-        solver = self.solver
-        ap = self.ap
-
-        self._set_ap(inputs)
-
-        # Set the warped mesh
-        #solver.mesh.setSolverGrid(inputs['x_g'])
-        # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
-        self._set_states(inputs)
-
-        outputs['f_a'] = solver.getForces().flatten(order='C')
-
-    def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
-
-        solver = self.solver
-        ap = self.ap
-
-        if mode == 'fwd':
-            if 'f_a' in d_outputs:
-                xDvDot = {}
-                for var_name in d_inputs:
-                    xDvDot[var_name] = d_inputs[var_name]
-                if 'q' in d_inputs:
-                    wDot = d_inputs['q']
-                else:
-                    wDot = None
-                if 'x_g' in d_inputs:
-                    xVDot = d_inputs['x_g']
-                else:
-                    xVDot = None
-                if not(xVDot is None and wDot is None):
-                    dfdot = solver.computeJacobianVectorProductFwd(xDvDot=xDvDot,
-                                                                   xVDot=xVDot,
-                                                                   wDot=wDot,
-                                                                   fDeriv=True)
-                    d_outputs['f_a'] += dfdot.flatten()
-
-        elif mode == 'rev':
-            if 'f_a' in d_outputs:
-                fBar = d_outputs['f_a']
-
-                wBar, xVBar, xDVBar = solver.computeJacobianVectorProductBwd(
-                    fBar=fBar,
-                    wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True)
-
-                if 'x_g' in d_inputs:
-                    d_inputs['x_g'] += xVBar
-                if 'q' in d_inputs:
-                    d_inputs['q'] += wBar
-
-                for dv_name, dv_bar in xDVBar.items():
-                    if dv_name in d_inputs:
-                        d_inputs[dv_name] += dv_bar.flatten()
-
-
-class AdflowHeatTransfer(ExplicitComponent):
-    """
-    OpenMDAO component that wraps heat transfer integration
-
-    """
-
-    def initialize(self):
-        self.options.declare('solver_options')
-        self.options.declare('aero_problem')
-        #self.options.declare('use_OM_KSP', default=False, types=bool,
-        #    desc="uses OpenMDAO's PestcKSP linear solver with Adflow's preconditioner to solve the adjoint.")
-
-        self.options['distributed'] = True
-
-        self.objBuilders = [AdflowObjBuilder()]
-        # testing flag used for unit-testing to prevent the call to actually solve
-        # NOT INTENDED FOR USERS!!! FOR TESTING ONLY
-        self._do_solve = True
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
-
-
-    def setup(self):
-        #self.set_check_partial_options(wrt='*',directional=True)
-
-
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
-
-        solver = self.solver = self.objBuilders[0].obj
-
-
-
-        local_state_size = solver.getStateSize()
-        local_coord_size = solver.mesh.getSolverGrid().size
-        s_list = self.comm.allgather(local_state_size)
-        n_list = self.comm.allgather(local_coord_size)
-        irank  = self.comm.rank
-
-        s1 = np.sum(s_list[:irank])
-        s2 = np.sum(s_list[:irank+1])
-        n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
-
-        local_nodes, nCells = solver._getSurfaceSize(solver.allIsothermalWallsGroup)
-        t_list = self.comm.allgather(local_nodes)
-
-        t1 = np.sum(t_list[:irank])
-        t2 = np.sum(t_list[:irank+1])
-
-        self.add_input('x_g', src_indices=np.arange(n1,n2,dtype=int), shape=local_coord_size)
-        self.add_input('q', src_indices=np.arange(s1,s2,dtype=int), shape=local_state_size)
-        # self.add_input('wall_temp',src_indices=np.arange(t1,t2,dtype=int), shape=local_nodes, units='K')
-
-
-        # print('before', local_nodes, nCells)
-        # local_nodes = self.comm.allreduce(local_nodes, op=MPI.SUM)
-        # print('after', local_nodes, nCells)
-        # self.comm.barrier()
-        # self.comm.barrier()
-        # print(solver.getWallTemperature(solver.allWallsGroup))
-        self.add_output('heatflux', val=np.ones(local_nodes)*0, shape=local_nodes, units='W/m**2')
-
-        #self.declare_partials(of='f_a', wrt='*')
-
-        self.set_ap(self.options['aero_problem'])
-
-
-    def set_ap(self, ap):
-        # this is the external function to set the ap to this component
-        self.ap = ap
-
-        self.ap_vars,_ = get_dvs_and_cons(ap=ap)
-        irank  = self.comm.rank
-
-        # parameter inputs
-        if self.comm.rank == 0:
-            print('adding ap var inputs')
-        for (args, kwargs) in self.ap_vars:
-            name = args[0]
-            size = args[1]
-
-
-            val = kwargs['value']
-
-
-            s_list = self.comm.allgather(size)
-
-            s1 = np.sum(s_list[:irank])
-            s2 = np.sum(s_list[:irank+1])
-
-            self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
-            if self.comm.rank == 0:
-                print(irank, name, size, s1, s2)
-
-    def _set_ap(self, inputs):
-        tmp = {}
-        for (args, kwargs) in self.ap_vars:
-            name = args[0]
-            tmp[name] = inputs[name]
-
-        self.ap.setDesignVars(tmp)
-
-    def _set_states(self, inputs):
-        self.solver.setStates(inputs['q'])
-
-    def compute(self, inputs, outputs):
-
-        solver = self.solver
-        print(id(solver))
-        print('q', np.linalg.norm(inputs['q']))
-        print('wall_tmp', np.linalg.norm(inputs['wall_temp']))
-        print('x_g', np.linalg.norm(inputs['x_g']))
-
-        if self._do_solve:
-            self._set_ap(inputs)
-            # Set the warped mesh
-            #solver.mesh.setSolverGrid(inputs['x_g'])
-            # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
-            self._set_states(inputs)
-
-        # Set the warped mesh
-        #solver.mesh.setSolverGrid(inputs['x_g'])
-        # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
-
-        #
-
-        outputs['heatflux'] = solver.getHeatXferRates().flatten(order='C')
-        print(outputs['heatflux'] )
-        outputs['heatflux'] = solver.getHeatXferRates().flatten(order='C')
-        print(outputs['heatflux'] )
-
-    def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
-
-        solver = self.solver
-        ap = self.options['aero_problem']
-        if self._do_solve:
-            self._set_ap(inputs)
-            # Set the warped mesh
-            #solver.mesh.setSolverGrid(inputs['x_g'])
-            # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
-            self._set_states(inputs)
-        if mode == 'fwd':
-            if 'heatflux' in d_outputs:
-                xDvDot = {}
-                for var_name in d_inputs:
-                    xDvDot[var_name] = d_inputs[var_name]
-                if 'q' in d_inputs:
-                    wDot = d_inputs['q']
-                else:
-                    wDot = None
-                if 'x_g' in d_inputs:
-                    xVDot = d_inputs['x_g']
-                else:
-                    xVDot = None
-                if not(xVDot is None and wDot is None):
-                    dhfdot = solver.computeJacobianVectorProductFwd(xDvDot=xDvDot,
-                                                                   xVDot=xVDot,
-                                                                   wDot=wDot,
-                                                                   hfDeriv=True)
-                    dhfdot_map = np.zeros((dhfdot.size, 3))
-                    dhfdot_map[:,0] = dhfdot.flatten()
-                    dhfdot_map =  self.solver.mapVector(dhfdot_map, self.solver.allWallsGroup, self.solver.allIsothermalWallsGroup)
-                    dhfdot = dhfdot_map[:,0]
-                    d_outputs['heatflux'] += dhfdot
-
-        elif mode == 'rev':
-            if 'heatflux' in d_outputs:
-                hfBar = d_outputs['heatflux']
-                # import ipdb; ipdb.set_trace()
-
-                hfBar_map = np.zeros((hfBar.size, 3))
-                hfBar_map[:,0] = hfBar.flatten()
-                hfBar_map =  self.solver.mapVector(hfBar_map, self.solver.allIsothermalWallsGroup, self.solver.allWallsGroup)
-                hfBar = hfBar_map[:,0]
-
-                wBar, xVBar, xDVBar = solver.computeJacobianVectorProductBwd(
-                    hfBar=hfBar, wDeriv=True, xVDeriv=True, xDvDeriv=True)
-
-                if 'x_g' in d_inputs:
-                    d_inputs['x_g'] += xVBar
-                if 'q' in d_inputs:
-                    d_inputs['q'] += wBar
-
-                for dv_name, dv_bar in xDVBar.items():
-                    if dv_name in d_inputs:
-                        d_inputs[dv_name] += dv_bar.flatten()
-
-
-FUNCS_UNITS={
-    'mdot': 'kg/s',
-    'mavgptot': 'Pa',
-    'mavgps': 'Pa',
-    'mavgttot': 'degK',
-    'mavgvx':'m/s',
-    'mavgvy':'m/s',
-    'mavgvz':'m/s',
-    'drag': 'N',
-    'lift': 'N',
-    'dragpressure': 'N',
-    'dragviscous': 'N',
-    'dragmomentum': 'N',
-    'fx': 'N',
-    'fy': 'N',
-    'fz': 'N',
-    'forcexpressure': 'N',
-    'forceypressure': 'N',
-    'forcezpressure': 'N',
-    'forcexviscous': 'N',
-    'forceyviscous': 'N',
-    'forcezviscous': 'N',
-    'forcexmomentum': 'N',
-    'forceymomentum': 'N',
-    'forcezmomentum': 'N',
-    'flowpower': 'W',
-    'area':'m**2',
-    'totheatflux':'W/m**2'
-}
-
-class AdflowFunctions(ExplicitComponent):
-
-    def initialize(self):
-        self.options.declare('solver_options')
-        self.options.declare('aero_problem')
-        #self.options.declare('use_OM_KSP', default=False, types=bool,
-        #    desc="uses OpenMDAO's PestcKSP linear solver with Adflow's preconditioner to solve the adjoint.")
-
-
-
-        # testing flag used for unit-testing to prevent the call to actually solve
-        # NOT INTENDED FOR USERS!!! FOR TESTING ONLY
-        self._do_solve = True
-
-        self.objBuilders = [AdflowObjBuilder()]
-
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
-
-    def setup(self):
-
-
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
-
-        self.solver = self.objBuilders[0].obj
-
-
-
-        solver = self.solver
-        #self.set_check_partial_options(wrt='*',directional=True)
-
-        local_state_size = solver.getStateSize()
-        local_coord_size = solver.mesh.getSolverGrid().size
-        s_list = self.comm.allgather(local_state_size)
-        n_list = self.comm.allgather(local_coord_size)
-        irank  = self.comm.rank
-
-        s1 = np.sum(s_list[:irank])
-        s2 = np.sum(s_list[:irank+1])
-        n1 = np.sum(n_list[:irank])
-        n2 = np.sum(n_list[:irank+1])
-
-        self.add_input('x_g', src_indices=np.arange(n1,n2,dtype=int), shape=local_coord_size)
-        self.add_input('q', src_indices=np.arange(s1,s2,dtype=int), shape=local_state_size)
-
-        self.set_ap(self.options['aero_problem'])
-            #self.declare_partials(of=f_name, wrt='*')
-
-    def _set_ap(self, inputs):
-        tmp = {}
-        for (args, kwargs) in self.ap_vars:
-            name = args[0]
-            tmp[name] = inputs[name]
-
-        self.ap.setDesignVars(tmp)
-
-
-    # def _set_ap(self, inputs):
-    #     tmp = {}
-    #     irank  = self.comm.rank
-    #     print(irank, 'setup', self.ap_vars)
-
-    #     for (args, kwargs) in self.ap_vars:
-    #         name = args[0]
-    #         tmp[name] = inputs[name][0]
-    #         print(irank, name)
-    #     print(tmp)
-    #     self.ap.setDesignVars(tmp)
-        #self.options['solver'].setAeroProblem(self.options['aero_problem'])
-
-    def set_ap(self, ap):
-        # this is the external function to set the ap to this component
-        self.ap = ap
-
-        self.ap_vars,_ = get_dvs_and_cons(ap=ap)
-        irank  = self.comm.rank
-
-        # parameter inputs
-        if self.comm.rank == 0:
-            print('adding ap var inputs')
-        for (args, kwargs) in self.ap_vars:
-            name = args[0]
-            size = args[1]
-
-
-            val = kwargs['value']
-
-
-            s_list = self.comm.allgather(size)
-
-            s1 = np.sum(s_list[:irank])
-            s2 = np.sum(s_list[:irank+1])
-
-            self.add_input(name, val=val, src_indices=np.arange(s1,s2,dtype=int), units=kwargs['units'])
-            if self.comm.rank == 0:
-                print(irank, name, size, s1, s2)
-
-        for f_name in self.ap.evalFuncs:
-
-            if self.comm.rank == 0:
-                print("adding adflow func as output: {}".format(f_name))
-
-            if f_name in FUNCS_UNITS:
-                self.add_output(f_name, shape=1, units=FUNCS_UNITS[f_name])
-            else:
-                self.add_output(f_name, shape=1)
-            #self.add_output(f_name, shape=1, units=units)
-
-
-
-    def _set_states(self, inputs):
-        self.solver.setStates(inputs['q'])
 
     def _get_func_name(self, name):
-        return '%s_%s' % (self.ap.name, name.lower())
+        return "%s_%s" % (self.ap.name, name.lower())
 
     def compute(self, inputs, outputs):
-        irank  = self.comm.rank
+        self.set_ap_design_vars(self.ap, inputs)
 
+        # Set the warped mesh
+        self.solver.adflow.warping.setgrid(inputs["x_g"])
 
-
-        solver = self.solver
-        ap = self.ap
-        #print('funcs compute')
-        #actually setting things here triggers some kind of reset, so we only do it if you're actually solving
-        if self._do_solve:
-            self._set_ap(inputs)
-            # Set the warped mesh
-            #solver.mesh.setSolverGrid(inputs['x_g'])
-            # ^ This call does not exist. Assume the mesh hasn't changed since the last call to the warping comp for now
-            self._set_states(inputs)
+        self.solver.setStates(inputs["q"])
 
         funcs = {}
-
         eval_funcs = [f_name for f_name in self.ap.evalFuncs]
 
-        solver.evalFunctions(ap, funcs, eval_funcs)
+        self.solver.evalFunctions(self.ap, funcs, eval_funcs)
 
+        print(funcs)
+        print(eval_funcs)
         for name in self.ap.evalFuncs:
             f_name = self._get_func_name(name)
             if f_name in funcs:
                 outputs[name.lower()] = funcs[f_name]
 
+
+        if self.options["forces"]:
+            outputs["f_a"] = self.solver.getForces().flatten(order="C")
+
+        if self.options["heatxfer"]:
+            outputs["heatflux"] = self.solver.getHeatXferRates().flatten(order="C")
+
+
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
-        solver = self.solver
-        ap = self.ap
-        if mode == 'fwd':
+        if mode == "fwd":
             xDvDot = {}
             for key in ap.DVs:
                 if key in d_inputs:
-                    mach_name = key.split('_')[0]
+                    mach_name = key.split("_")[0]
                     xDvDot[mach_name] = d_inputs[key]
 
-            if 'q' in d_inputs:
-                wDot = d_inputs['q']
+            if "q" in d_inputs:
+                wDot = d_inputs["q"]
             else:
                 wDot = None
 
-            if 'x_g' in d_inputs:
-                xVDot = d_inputs['x_g']
+            if "x_g" in d_inputs:
+                xVDot = d_inputs["x_g"]
             else:
                 xVDot = None
 
-            funcsdot = solver.computeJacobianVectorProductFwd(
-                xDvDot=xDvDot,
-                xVDot=xVDot,
-                wDot=wDot,
-                funcDeriv=True)
+            funcsdot, fdot, hfdot = self.solver.computeJacobianVectorProductFwd(
+                xDvDot=xDvDot, xVDot=xVDot, wDot=wDot, funcDeriv=True, fDeriv=True, hfDeriv=True
+            )
+
+            if "f_a" in d_outputs:
+                d_outputs["f_a"] += fdot.flatten()
+
+            if "heatflux" in d_outputs:
+                d_outputs["heatflux"] += hfdot.flatten()
 
             for name in funcsdot:
                 func_name = name.lower()
                 if name in d_outputs:
                     d_outputs[name] += funcsdot[func_name]
 
-        elif mode == 'rev':
+        elif mode == "rev":
             funcsBar = {}
 
-            for name  in self.ap.evalFuncs:
+            for name in self.ap.evalFuncs:
                 func_name = name.lower()
 
                 # we have to check for 0 here, so we don't include any unnecessary variables in funcsBar
                 # becasue it causes Adflow to do extra work internally even if you give it extra variables, even if the seed is 0
-                if func_name in d_outputs and d_outputs[func_name] != 0.:
+                if func_name in d_outputs and d_outputs[func_name] != 0.0:
                     funcsBar[func_name] = d_outputs[func_name][0]
                     # this stuff is fixed now. no need to divide
                     # funcsBar[func_name] = d_outputs[func_name][0] / self.comm.size
                     # print(self.comm.rank, func_name, funcsBar[func_name])
 
-            #print(funcsBar, flush=True)
+            if "f_a" in d_outputs:
+                fBar = d_outputs["f_a"]
+            else:
+                fBar = None
 
-            d_input_vars = list(d_inputs.keys())
-            n_input_vars = len(d_input_vars)
+            if "heatflux" in d_outputs:
+                hfBar = d_outputs["heatflux"]
+            else:
+                hfBar = None
 
-            wBar = None
-            xVBar = None
-            xDVBar = None
 
-            wBar, xVBar, xDVBar = solver.computeJacobianVectorProductBwd(
-                funcsBar=funcsBar,
-                wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True)
+            wBar, xVBar, xDVBar = self.solver.computeJacobianVectorProductBwd(
+                funcsBar=funcsBar, fBar=fBar, hfBar=hfBar, wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True
+            )
 
-            if 'q' in d_inputs:
-                d_inputs['q'] += wBar
-            if 'x_g' in d_inputs:
-                d_inputs['x_g'] += xVBar
+            if "q" in d_inputs:
+                d_inputs["q"] += wBar
+            if "x_g" in d_inputs:
+                d_inputs["x_g"] += xVBar
 
             for dv_name, dv_bar in xDVBar.items():
                 if dv_name in d_inputs:
                     d_inputs[dv_name] += dv_bar.flatten()
 
 
-class AdflowGroup(Analysis):
-
+class AdflowGroup(SharedObjGroup):
     def initialize(self):
         super().initialize()
-        self.options.declare('aero_problem')
-        self.options.declare('solver_options')
-        self.options.declare('group_options')
+        self.options.declare("aero_problem")
+        self.options.declare("group_options")
+        self.options.declare("forces", default=False)
+        self.options.declare("heatxfer", default=False)
+        self.options["share_all_builders"] = False
+        self.options.declare("shared_obj_builders", default={AdflowObjBuilder: None}, recordable=False)
 
         # default values which are updated later
         self.group_options = {
-            'mesh': True,
-            'geo_disp': False,
-            'deformer': True,
-            'solver': True,
-            'funcs': True,
-            'forces': False,
-            'heatxfer':False
+            "mesh": True,
+            "geo_disp": False,
+            "deformer": True,
+            "solver": True,
+            "funcs": True,
+            # "forces": False,
+            # "heatxfer": False,
         }
-        self.group_components = OrderedDict({
-            'mesh': AdflowMesh,
-            'geo_disp': Geo_Disp,
-            'deformer': AdflowWarper,
-            'solver': AdflowSolver,
-            'funcs': AdflowFunctions,
-            'forces': AdflowForces,
-            'heatxfer':AdflowHeatTransfer
-        })
+        self.group_components = OrderedDict(
+            {
+                "mesh": AdflowMesh,
+                "geo_disp": Geo_Disp,
+                "deformer": AdflowWarper,
+                "solver": AdflowSolver,
+                "funcs": AdflowFunctions,
+                # "forces": AdflowForces,
+                # "heatxfer": AdflowHeatTransfer,
+            }
+        )
 
         # self.solver_objects = {'Adflow':None}
 
-
         self.solvers_init = False
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def setup(self):
+        # issue conditional connections
+        self.group_options.update(self.options["group_options"])
 
-        self.group_options.update(self.options['group_options'])
+        if self.group_options["mesh"] and self.group_options["deformer"] and not self.group_options["geo_disp"]:
+            # import ipdb; ipdb.set_trace()
+            self.connect("Xsurf_allWalls", "x_a")
 
         # if you wanted to check that the user gave a valid combination of components (solver, mesh, ect)
         # you could do that here, but they will be shown on the n2
 
-
         print("=========")
-        for comp in self.group_components:
-            if self.group_options[comp]:
-                print(comp)
-                if comp in ['mesh', 'geo_disp', 'deformer']:
-                    self.add_subsystem(comp, self.group_components[comp](solver_options=self.options['solver_options']),
-                                        promotes=['*']) # we can connect things implicitly through promotes
-                                                        # because we already know the inputs and outputs of each
-                                                        # components
+        for comp_name, comp in self.group_components.items():
+            if self.group_options[comp_name]:
+                print(comp_name)
+                if comp_name in ["mesh", "geo_disp", "deformer"]:
+                    comp = self.group_components[comp_name]()
+                elif comp_name == "solver":
+                    comp = self.group_components[comp_name](aero_problem=self.options["aero_problem"])
+                elif comp_name == "funcs":
+                    comp = self.group_components[comp_name](aero_problem=self.options["aero_problem"],
+                                                            forces=self.options['forces'],
+                                                            heatxfer=self.options["heatxfer"])
 
-                else:
-                    self.add_subsystem(comp, self.group_components[comp](solver_options=self.options['solver_options'],
-                                                                         aero_problem=self.options['aero_problem']),
-                                                    promotes=['*']) # we can connect things implicitly through promotes
-                                                                    # because we already know the inputs and outputs of each
-                                                                    # components
+                self.add_subsystem(comp_name, comp, promotes=["*"])
+                #  we can connect things implicitly through promotes
+                #  because we already know the inputs and outputs of each
+                #  components
 
-
-    def setup(self):
         super().setup()
-        # issue conditional connections
-        if self.group_options['mesh'] and self.group_options['deformer'] and not self.group_options['geo_disp']:
-            # import ipdb; ipdb.set_trace()
-            self.connect('Xsurf_allWalls', 'x_a')
-
-
-
-

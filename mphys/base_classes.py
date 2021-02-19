@@ -19,26 +19,26 @@ class SolverObjectBasedSystem(metaclass=ABCMeta):
     # def initialize(self):
 
         #initialize the solver objects to None
-        # self.solver_objects = { 'MeshName':None, 
+        # self.solver_objects = { 'MeshName':None,
         #                     'SolverName':None,
         #                     'EctName':None}
-        
+
         # set the init flag to false
         # self.solvers_init = False
 
-    
+
     @abstractmethod
     def init_solver_objects(self, comm):
         """ creates solver/transfer scheme/etc using provided comm which
         entails the allocation of memory for any computation"""
-        
+
         mesh = mymodule.MeshObj(self.options['mesh_file'])
         solver = mymodule.SolverObj(self.options['solver_options'])
-        
-        self.solver_objects = { 'MeshName':mesh, 
+
+        self.solver_objects = { 'MeshName':mesh,
                                 'SolverName':solver,
                                 'EctName':ect}
-        
+
         # set the init flag to true!
         self.solvers_init = True
 
@@ -67,36 +67,34 @@ class SolverObjectBasedSystem(metaclass=ABCMeta):
 
 class ObjBuilder():
 
-    def __init__(self, obj_type):
-        self.obj_type = obj_type
-        self._obj = None
-        self.options = None
+    def __init__(self, options):
+        self.options = options
 
-    @property
-    def obj(self):
-        # if self.solvers_obj is None:
-        #     print('Solver used before it was initialized or set')
-        #     import ipdb; ipdb.set_trace()
-        #     raise RuntimeError('Solver used before it was initialized or set')
+    # @property
+    # def obj(self):
+    #     # if self.solvers_obj is None:
+    #     #     print('Solver used before it was initialized or set')
+    #     #     import ipdb; ipdb.set_trace()
+    #     #     raise RuntimeError('Solver used before it was initialized or set')
 
-        return self._obj
+    #     return self._obj
 
-    @obj.setter
-    def obj(self, obj):
-        # check that the obj is the right type
-        if isinstance(obj, self.obj_type):
-            self._obj = obj 
-        else:
+    # @obj.setter
+    # def obj(self, obj):
+    #     # check that the obj is the right type
+    #     if isinstance(obj, self.obj_type):
+    #         self._obj = obj
+    #     else:
 
-            print('type of obj supplied does not match type expected')
-            import ipdb; ipdb.set_trace()
-            raise RuntimeError('Solver used before it was initialized or set')
+    #         print('type of obj supplied does not match type expected')
+    #         import ipdb; ipdb.set_trace()
+    #         raise RuntimeError('Solver used before it was initialized or set')
 
 
-    def  build_obj(self, comm):
-        """this must be added for all derived types"""
-        
-        raise NotImplementedError
+    # def  build_obj(self, comm):
+    #     """this must be added for all derived types"""
+
+    #     raise NotImplementedError
 
 class SysBuilder(object):
     def __init__(self, mesh_sys=None, sys=None, funcs_sys=None, options=None):

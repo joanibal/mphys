@@ -1,6 +1,7 @@
 import openmdao.api as om
 from pygeo import DVGeometry
 from mpi4py import MPI
+import numpy as np
 
 # class that actually calls the dvgeometry methods
 class OM_DVGEOCOMP(om.ExplicitComponent):
@@ -71,44 +72,6 @@ class OM_DVGEOCOMP(om.ExplicitComponent):
                         # accumulate in the dict
                         d_inputs[k] += xdotg[k]
 
-import numpy as np
-from pyspline import pySpline
-
-def scale_sections(val, geo):
-    for i in range(nSpanwise):
-            geo.scale['centerline'].coef[i] = val[i]
-
-
-
-nSpanwise = 15
-
-
-
-def getDVGeo(DVGeo, ffd_file):
-    """ returns the DVGeo for the deployed condition """
-    from .ffd_utils import readFFDFile, getSections
-
-
-    coords, ffd_size = readFFDFile(ffd_file)
-    sections = getSections(coords, ffd_size, section_idx=0)
-
-
-    centroid = np.mean(sections, axis=1)
-    c0 = pySpline.Curve(X=centroid, k=2)
-
-    DVGeo.addRefAxis('centerline', curve=c0, axis='y')
-
-
-    DVGeo.addGeoDVGlobal('scale_sections', np.ones(ffd_size[0])*1.0,
-                        scale_sections,
-                        lower=np.ones(ffd_size[0])*0.5,
-                        upper=np.ones(ffd_size[0])*3,
-                        scale=1)
-
-
-    return DVGeo
-
-
 # class that actually calls the dvgeometry methods
 class DVGeoComp(om.ExplicitComponent):
 
@@ -133,6 +96,7 @@ class DVGeoComp(om.ExplicitComponent):
         ffd_file = self.options['ffd_file']
         self.DVGeo = DVGeometry(ffd_file)
 
+        getDVGeo = self.options['setup_dvgeo']
         self.DVGeo = getDVGeo(self.DVGeo, ffd_file)
         self.add_input('pts', shape_by_conn=True)
 
@@ -143,7 +107,7 @@ class DVGeoComp(om.ExplicitComponent):
         for lst in varLists:
             for key in varLists[lst]:
                 dv = varLists[lst][key]
-                # import ipdb; ipdb.set_trace()
+                print(dv.value.shape)
                 self.add_input(dv.name, src_indices=np.arange(dv.value.size), shape=dv.value.shape)
         self.add_output('deformed_pts', copy_shape='pts')
 
