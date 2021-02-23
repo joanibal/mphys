@@ -60,6 +60,29 @@ class AeroProblemMixIns:
         print(tmp)
         ap.setDesignVars(tmp)
 
+    def add_BCVars_to_ap(self,CFDSolver, ap, BCVar, famGroup):
+        """
+        adds any BCData from the CFDSolver to the aeroproblem
+
+        Parameters
+        ----------
+        ap : AeroProblem
+            The AeroProblem from MACH baseclasses hold the information about
+            flow conditions which may be a design variables
+
+        Returns
+        ----------
+        ap : AeroProblem
+            The same problem, but with the BCVar added as a design variabl
+        """
+        bc_data = CFDSolver.getBCData()
+        print(self.comm.rank, bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup))
+        ap.setBCVar(BCVar, bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup), famGroup)
+        ap.addDV(BCVar, familyGroup=famGroup, name=(BCVar + "_" + famGroup))
+
+
+        return ap
+
     def add_ap_inputs(self, ap):
         """The design variables of the aero problem are set as inputs
         to the component
@@ -200,6 +223,10 @@ class AdflowMapper(ExplicitComponent):
 
             out_vec = outputs["Xsurf_%s" % (out_famGroup)]
             out_vec = out_vec.reshape(out_vec.size // 3, 3)
+
+            if self.solver.dtype == 'D' and not self.under_complex_step:
+                in_vec = np.array(in_vec, dtype=self.solver.dtype)
+                out_vec = np.array(out_vec, dtype=self.solver.dtype)
             # import ipdb; ipdb.set_trace()
             out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
             outputs["Xsurf_%s" % (out_famGroup)] = out_vec.flatten(order="C")
@@ -337,6 +364,7 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
     def initialize(self):
         self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
         self.options.declare("aero_problem")
+        self.options.declare("BCDesVar", default={})
 
         self.options["distributed"] = True
 
@@ -357,6 +385,10 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         self.add_output("q", shape=local_state_size)
 
         self.ap = self.options["aero_problem"]
+        print(self.options["BCDesVar"])
+        for BCVar, famGroup in self.options["BCDesVar"].items():
+            self.add_BCVars_to_ap(self.solver, self.ap, BCVar, famGroup)
+
         self.add_ap_inputs(self.ap)
 
     def apply_nonlinear(self, inputs, outputs, residuals):
@@ -445,6 +477,8 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
 class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
     def initialize(self):
         self.options.declare("aero_problem")
+        self.options.declare("BCDesVar", default={})
+
 
         self.options.declare("forces", default=False)
         self.options.declare("heatxfer", default=False)
@@ -501,6 +535,10 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
         self.add_input("q", src_indices=np.arange(s1, s2, dtype=int), shape=local_state_size)
 
         self.ap = self.options["aero_problem"]
+        for BCVar, famGroup in self.options["BCDesVar"].items():
+            self.add_BCVars_to_ap(self.solver, self.ap, BCVar, famGroup)
+
+
         self.add_ap_inputs(self.ap)
         self.add_ap_outputs(self.ap, self.func_to_units)
 
@@ -623,6 +661,7 @@ class AdflowGroup(SharedObjGroup):
         self.options.declare("group_options")
         self.options.declare("forces", default=False)
         self.options.declare("heatxfer", default=False)
+        self.options.declare("BCDesVar", default={})
         self.options["share_all_builders"] = False
         self.options.declare("shared_obj_builders", default={AdflowObjBuilder: None}, recordable=False)
 
@@ -670,9 +709,11 @@ class AdflowGroup(SharedObjGroup):
                 if comp_name in ["mesh", "geo_disp", "deformer"]:
                     comp = self.group_components[comp_name]()
                 elif comp_name == "solver":
-                    comp = self.group_components[comp_name](aero_problem=self.options["aero_problem"])
+                    comp = self.group_components[comp_name](aero_problem=self.options["aero_problem"],
+                                                            BCDesVar=self.options["BCDesVar"])
                 elif comp_name == "funcs":
                     comp = self.group_components[comp_name](aero_problem=self.options["aero_problem"],
+                                                            BCDesVar=self.options["BCDesVar"],
                                                             forces=self.options['forces'],
                                                             heatxfer=self.options["heatxfer"])
 
