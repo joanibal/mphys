@@ -1,6 +1,5 @@
 import numpy as np
 import openmdao.api as om
-from funtofem import TransferScheme
 import matplotlib.pyplot as plt
 
 
@@ -27,20 +26,31 @@ class MeldObjBuilder(ObjBuilder):
 
 
 class MeldThermalObjBuilder(ObjBuilder):
-    def __init__(self):
-        super().__init__(TransferScheme.pyMELDThermal)
+    def __init__(self, options, complexify=False):
+        super().__init__(options)
+        self.complexify = complexify
+        self.obj_built = False
 
-    def build_obj(self, comm):
+    def get_obj(self, comm):
 
-        meld_therm = TransferScheme.pyMELDThermal(comm,
-                                           comm, 0,
-                                           comm, 0,
-                                           self.options['isym'],
-                                           self.options['n'],
-                                           self.options['beta'])
+        if not self.obj_built:
+            if self.complexify:
+                from funtofem_cs import TransferScheme
+            else:
+                from funtofem import TransferScheme
 
+            self.meld_therm = TransferScheme.pyMELDThermal(comm,
+                                            comm, 0,
+                                            comm, 0,
+                                            self.options['isym'],
+                                            self.options['n'],
+                                            self.options['beta'])
 
-        return meld_therm
+            self.obj_built = True
+
+            self.dtype = TransferScheme.dtype
+
+        return self.meld_therm
 
 
 
@@ -50,14 +60,11 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
     Component to perform displacement transfer using MELD
     """
     def initialize(self):
-        self.options.declare('solver_options')
+        self.options.declare("obj_builders", default={MeldThermalObjBuilder: None}, recordable=False)
 
-        self.options.declare('check_partials', default=False)
 
         self.options['distributed'] = True
 
-
-        self.objBuilders = [MeldThermalObjBuilder()]
         self.initialized_meld = False
 
         self.cond_ndof = None
@@ -66,56 +73,12 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         self.check_partials = False
 
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
-
-
 
     def setup(self):
-        # self.meldThermal = self.options['xfer_object']
-
-        # self.cond_ndof   = self.options['cond_ndof']
-        # self.cond_nnodes = self.options['cond_nnodes']
-        # self.conv_nnodes   = self.options['conv_nnodes']
-        # self.check_partials= self.options['check_partials']
-        # cond_ndof = self.cond_ndof
-        # cond_nnodes = self.cond_nnodes
-        # conv_nnodes = self.conv_nnodes
-        self.check_partials= self.options['check_partials']
-
-        # irank = self.comm.rank
-
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
-
-        self.meldThermal = self.objBuilders[0].obj
-
-        # ax_list = self.comm.allgather(conv_nnodes*3)
-        # ax1 = np.sum(ax_list[:irank])
-        # ax2 = np.sum(ax_list[:irank+1])
-
-        # sx_list = self.comm.allgather(cond_nnodes*3)
-        # sx1 = np.sum(sx_list[:irank])
-        # sx2 = np.sum(sx_list[:irank+1])
 
 
-        # cond_temp_list = self.comm.allgather(self.cond_nnodes*cond_ndof)
-        # cond_temp_n1 = np.sum(cond_temp_list[:irank])
-        # cond_temp_n2 = np.sum(cond_temp_list[:irank+1])
-
-        # print('cond_ndof', cond_ndof)
-        # # inputs
-        # print('x_s0',sx1, sx2,   cond_nnodes*3)
-
-
-        # self.add_input('x_s0', shape = cond_nnodes*3,           src_indices = np.arange(sx1, sx2, dtype=int), desc='initial structural node coordinates')
-        # print('x_a0',ax1, ax2,   conv_nnodes*3)
-        # self.add_input('x_a0', shape = conv_nnodes*3,             src_indices = np.arange(ax1, ax2, dtype=int), desc='initial aerodynamic surface node coordinates')
-
+        self.meldThermal = self.options["obj_builders"][MeldThermalObjBuilder].get_obj(self.comm)
+        self.meld_dtype = self.options["obj_builders"][MeldThermalObjBuilder].dtype
 
         self.add_input('x_cond0', shape_by_conn=True, desc='initial structural node coordinates')
         self.add_input('x_conv0', shape_by_conn=True, desc='initial aerodynamic surface node coordinates')
@@ -124,29 +87,15 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         self.add_output('temp_conv', shape_by_conn=True , desc='convective nodal temperature')
 
 
-        # # self.add_input('x_s0', shape = cond_nnodes*3,           src_indices = np.arange(sx1, sx2, dtype=int), desc='initial structural node coordinates')
-        # # print('x_a0',ax1, ax2,   conv_nnodes*3)
-        # # self.add_input('x_a0', shape = conv_nnodes*3,             src_indices = np.arange(ax1, ax2, dtype=int), desc='initial aerodynamic surface node coordinates')
-
-
-        # print('temp_cond',cond_temp_n1, cond_temp_n2,  self.cond_nnodes*cond_ndof)
-
-        # self.add_input('temp_cond',  shape = self.cond_nnodes*cond_ndof, src_indices = np.arange(cond_temp_n1, cond_temp_n2, dtype=int),
-        #                              desc='conductive node displacements')
-
-        # # outputs
-        # print('temp_conv', conv_nnodes)
-
-        # self.add_output('temp_conv', shape = conv_nnodes, val=np.ones(conv_nnodes)*301, desc='conv surface temperatures')
 
 
     def compute(self, inputs, outputs):
 
-        x_cond0 = np.array(inputs['x_cond0'],dtype=TransferScheme.dtype)
-        x_conv0 = np.array(inputs['x_conv0'],dtype=TransferScheme.dtype)
+        x_cond0 = np.array(inputs['x_cond0'],dtype=self.meld_dtype)
+        x_conv0 = np.array(inputs['x_conv0'],dtype=self.meld_dtype)
 
-        temp_conv  = np.array(outputs['temp_conv'],dtype=TransferScheme.dtype)
-        temp_cond  = np.array(inputs['temp_cond'],dtype=TransferScheme.dtype)
+        temp_conv  = np.array(outputs['temp_conv'],dtype=self.meld_dtype)
+        temp_cond  = np.array(inputs['temp_cond'],dtype=self.meld_dtype)
 
 
         print('meld set mesh')
@@ -182,10 +131,10 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
             if 'temp_conv' in d_outputs:
                 if 'temp_cond' in d_inputs:
 
-                    d_temp_cond =  np.array(d_inputs['temp_cond'],dtype=TransferScheme.dtype)
+                    d_temp_cond =  np.array(d_inputs['temp_cond'],dtype=self.meld_dtype)
 
 
-                    prod = np.zeros( d_outputs['temp_conv'].size,dtype=TransferScheme.dtype)
+                    prod = np.zeros( d_outputs['temp_conv'].size,dtype=self.meld_dtype)
 
                     meld.applydTdtS(d_temp_cond,prod)
                     d_outputs['temp_conv'] += np.array(prod,dtype=float)
@@ -204,12 +153,12 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
 
         if mode == 'rev':
             if 'temp_conv' in d_outputs:
-                dtemp_conv = np.array(d_outputs['temp_conv'],dtype=TransferScheme.dtype)
+                dtemp_conv = np.array(d_outputs['temp_conv'],dtype=self.meld_dtype)
 
                 if 'temp_cond' in d_inputs:
                     # dtemp_conv/dtemp_cond^T * psi = - dD/dtemp_cond^T psi
 
-                    prod = np.zeros(d_inputs['temp_cond'].size,dtype=TransferScheme.dtype)
+                    prod = np.zeros(d_inputs['temp_cond'].size,dtype=self.meld_dtype)
 
                     meld.applydTdtSTrans(dtemp_conv,prod)
 
@@ -217,12 +166,12 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
 
                 # dtemp_conv/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
                 if 'x_conv0' in d_inputs:
-                    prod = np.zeros(d_inputs['x_conv0'].size,dtype=TransferScheme.dtype)
+                    prod = np.zeros(d_inputs['x_conv0'].size,dtype=self.meld_dtype)
                     meld.applydLdxA0(dtemp_conv,prod)
                     d_inputs['x_conv0'] -= np.array(prod,dtype=float)
 
                 if 'x_cond0' in d_inputs:
-                    prod = np.zeros(d_inputs['x_cond0'].size,dtype=TransferScheme.dtype)
+                    prod = np.zeros(d_inputs['x_cond0'].size,dtype=self.meld_dtype)
                     meld.applydLdxS0(dtemp_conv,prod)
                     d_inputs['x_cond0'] -= np.array(prod,dtype=float)
 
@@ -231,62 +180,46 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
 
 
 
-class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
+class MELDThermal_heatflux_xfer(om.ExplicitComponent):
     """
     Component to perform load transfers using MELD
     """
     def initialize(self):
-        self.options.declare('solver_options')
+        self.options.declare("obj_builders", default={MeldThermalObjBuilder: None}, recordable=False)
 
-        self.options.declare('check_partials', default=False)
 
         self.options['distributed'] = True
 
-
-        self.objBuilders = [MeldThermalObjBuilder()]
         self.initialized_meld = False
 
         # self.cond_ndof = None
         # self.cond_nnodes = None
         # self.conv_nnodes = None
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
+        # self.check_partials = False
 
     def setup(self):
-        # get the transfer scheme object
 
-        self.check_partials= self.options['check_partials']
-
-
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
-
-        self.meldThermal = self.objBuilders[0].obj
-
+        self.meldThermal = self.options["obj_builders"][MeldThermalObjBuilder].get_obj(self.comm)
+        self.meld_dtype = self.options["obj_builders"][MeldThermalObjBuilder].dtype
 
 
         self.add_input('x_cond0', shape_by_conn=True, desc='initial structural node coordinates')
         self.add_input('x_conv0', shape_by_conn=True, desc='initial aerodynamic surface node coordinates')
 
-        self.add_input('heat_xfer_conv', shape_by_conn=True, desc='initial conv heat transfer rate')
-        self.add_output('heat_xfer_cond', shape_by_conn=True , desc='heat transfer rate on the conduction mesh at the interface')
+        self.add_input('heatflux_conv', shape_by_conn=True, desc='initial conv heat transfer rate')
+        self.add_output('heatflux_cond', shape_by_conn=True , desc='heat transfer rate on the conduction mesh at the interface')
 
         # outputs
 
 
     def compute(self, inputs, outputs):
 
-        heat_xfer_conv =  np.array(inputs['heat_xfer_conv'],dtype=TransferScheme.dtype)
-        heat_xfer_cond = outputs['heat_xfer_cond']
+        heatflux_conv =  np.array(inputs['heatflux_conv'],dtype=self.meld_dtype)
+        heatflux_cond =  np.array(outputs['heatflux_cond'],dtype=self.meld_dtype)
 
 
-        x_cond0 = np.array(inputs['x_cond0'],dtype=TransferScheme.dtype)
-        x_conv0 = np.array(inputs['x_conv0'],dtype=TransferScheme.dtype)
+        x_cond0 = np.array(inputs['x_cond0'],dtype=self.meld_dtype)
+        x_conv0 = np.array(inputs['x_conv0'],dtype=self.meld_dtype)
 
         print('meld set mesh')
         self.meldThermal.setStructNodes(x_cond0)
@@ -297,11 +230,11 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
             self.meldThermal.initialize()
             self.initialized_meld = True
 
-        self.meldThermal.transferFlux(heat_xfer_conv,heat_xfer_cond)
-        outputs['heat_xfer_cond'] = heat_xfer_cond
+        self.meldThermal.transferFlux(heatflux_conv,heatflux_cond)
+        outputs['heatflux_cond'] = heatflux_cond
 
         print('-------------------------------------------------------------------')
-        print('sum heat in ', np.sum(heat_xfer_conv), 'out', np.sum(heat_xfer_cond))
+        print('sum heat in ', np.sum(heatflux_conv), 'out', np.sum(heatflux_cond))
         print('-------------------------------------------------------------------')
 
 
@@ -321,10 +254,10 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
             if 'heat_xfer_cond' in d_outputs:
                 if 'heat_xfer_conv' in d_inputs:
 
-                    d_heat_xfer_conv =  np.array(d_inputs['heat_xfer_conv'],dtype=TransferScheme.dtype)
+                    d_heat_xfer_conv =  np.array(d_inputs['heat_xfer_conv'],dtype=self.meld_dtype)
 
 
-                    prod = np.zeros( d_outputs['heat_xfer_cond'].size,dtype=TransferScheme.dtype)
+                    prod = np.zeros( d_outputs['heat_xfer_cond'].size,dtype=self.meld_dtype)
 
                     meld.applydQdqA(d_heat_xfer_conv,prod)
                     d_outputs['heat_xfer_cond'] += np.array(prod,dtype=float)
@@ -343,12 +276,12 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
 
         if mode == 'rev':
             if 'heat_xfer_cond' in d_outputs:
-                dheat_xfer_cond = np.array(d_outputs['heat_xfer_cond'],dtype=TransferScheme.dtype)
+                dheat_xfer_cond = np.array(d_outputs['heat_xfer_cond'],dtype=self.meld_dtype)
 
                 if 'heat_xfer_conv' in d_inputs:
                     # dheat_xfer_cond/dheat_xfer_conv^T * psi = - dD/dheat_xfer_conv^T psi
 
-                    prod = np.zeros(d_inputs['heat_xfer_conv'].size,dtype=TransferScheme.dtype)
+                    prod = np.zeros(d_inputs['heat_xfer_conv'].size,dtype=self.meld_dtype)
 
                     meld.applydQdqATrans(dheat_xfer_cond,prod)
 
@@ -356,12 +289,12 @@ class MELDThermal_heat_xfer_rate_xfer(om.ExplicitComponent):
 
                 # dheat_xfer_cond/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
                 if 'x_conv0' in d_inputs:
-                    prod = np.zeros(d_inputs['x_conv0'].size,dtype=TransferScheme.dtype)
+                    prod = np.zeros(d_inputs['x_conv0'].size,dtype=self.meld_dtype)
                     meld.applydLdxA0(dheat_xfer_cond,prod)
                     d_inputs['x_conv0'] += np.array(prod,dtype=float)
 
                 if 'x_cond0' in d_inputs:
-                    prod = np.zeros(d_inputs['x_cond0'].size,dtype=TransferScheme.dtype)
+                    prod = np.zeros(d_inputs['x_cond0'].size,dtype=self.meld_dtype)
                     meld.applydLdxS0(dheat_xfer_cond,prod)
                     d_inputs['x_cond0'] += np.array(prod,dtype=float)
 

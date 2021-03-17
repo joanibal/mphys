@@ -39,8 +39,8 @@ class AdflowObjBuilder(ObjBuilder):
 
             self.obj_built = True
 
-        return self.solver
 
+        return self.solver
 
 class AeroProblemMixIns:
     """
@@ -155,36 +155,7 @@ class AdflowMesh(ExplicitComponent):
 
         for famGroup in self.options["family_groups"]:
             coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order="C")
-            self.add_output("Xsurf_%s" % (famGroup), val=coords, desc="surface points for %s" % (famGroup))
-
-    # def mphys_add_coordinate_input(self):
-    #     local_size = self.x_a0.size
-    #     n_list = self.comm.allgather(local_size)
-    #     irank  = self.comm.rank
-
-    #     n1 = np.sum(n_list[:irank])
-    #     n2 = np.sum(n_list[:irank+1])
-
-    #     self.add_input('x_a0_points',shape=local_size,src_indices=np.arange(n1,n2,dtype=int),desc='aerodynamic surface with geom changes')
-
-    #     # return the promoted name and coordinates
-    #     return 'x_a0_points', self.x_a0
-
-    # def compute(self,inputs,outputs):
-    #     if 'x_a0_points' in inputs:
-    #         outputs['x_a0'] = inputs['x_a0_points']
-    #     else:
-    #         # outputs['x_a0'] = self.x_a0
-    #         pass
-
-    # def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
-    #     if mode == 'fwd':
-    #         if 'x_a0_points' in d_inputs:
-    #             d_outputs['x_a0'] += d_inputs['x_a0_points']
-    #     elif mode == 'rev':
-    #         if 'x_a0_points' in d_inputs:
-    #             d_inputs['x_a0_points'] += d_outputs['x_a0']
-
+            self.add_output("X_%s" % (famGroup), val=coords, desc="surface points for %s" % (famGroup))
 
 class AdflowMapper(ExplicitComponent):
     """
@@ -207,21 +178,21 @@ class AdflowMapper(ExplicitComponent):
 
         in_famGroup = self.options["input_family_group"]
         coords = self.solver.getSurfaceCoordinates(groupName=in_famGroup).flatten(order="C")
-        self.add_input("Xsurf_%s" % (in_famGroup), val=coords, desc="surface points for %s" % (in_famGroup))
+        self.add_input("X_%s" % (in_famGroup), val=coords, desc="surface points for %s" % (in_famGroup))
 
         for famGroup in self.options["output_family_groups"]:
             coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order="C")
-            self.add_output("Xsurf_%s" % (famGroup), val=coords, desc="surface points for %s" % (famGroup))
+            self.add_output("X_%s" % (famGroup), val=coords, desc="surface points for %s" % (famGroup))
 
     def compute(self, inputs, outputs):
 
         in_famGroup = self.options["input_family_group"]
-        in_vec = inputs["Xsurf_%s" % (in_famGroup)]
+        in_vec = inputs["X_%s" % (in_famGroup)]
         in_vec = in_vec.reshape(in_vec.size // 3, 3)
         # loop over output families add do the mapping for each
         for out_famGroup in self.options["output_family_groups"]:
 
-            out_vec = outputs["Xsurf_%s" % (out_famGroup)]
+            out_vec = outputs["X_%s" % (out_famGroup)]
             out_vec = out_vec.reshape(out_vec.size // 3, 3)
 
             if self.solver.dtype == 'D' and not self.under_complex_step:
@@ -229,40 +200,40 @@ class AdflowMapper(ExplicitComponent):
                 out_vec = np.array(out_vec, dtype=self.solver.dtype)
             # import ipdb; ipdb.set_trace()
             out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
-            outputs["Xsurf_%s" % (out_famGroup)] = out_vec.flatten(order="C")
+            outputs["X_%s" % (out_famGroup)] = out_vec.flatten(order="C")
 
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
 
         in_famGroup = self.options["input_family_group"]
-        in_var_name = "Xsurf_%s" % (in_famGroup)
+        in_var_name = "X_%s" % (in_famGroup)
 
         if mode == "fwd":
             in_vec = d_inputs[in_var_name]
             in_vec = in_vec.reshape(in_vec.size // 3, 3)
 
             for out_famGroup in self.options["output_family_groups"]:
-                if "Xsurf_%s" % (out_famGroup) in d_outputs:
-                    out_vec = d_outputs["Xsurf_%s" % (out_famGroup)]
+                if "X_%s" % (out_famGroup) in d_outputs:
+                    out_vec = d_outputs["X_%s" % (out_famGroup)]
                     out_vec = out_vec.reshape(out_vec.size // 3, 3)
                     out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
 
-                    d_outputs["Xsurf_%s" % (out_famGroup)] += out_vec.flatten(order="C")
+                    d_outputs["X_%s" % (out_famGroup)] += out_vec.flatten(order="C")
 
         elif mode == "rev":
             if in_var_name in d_inputs:
                 for out_famGroup in self.options["output_family_groups"]:
-                    if "Xsurf_%s" % (out_famGroup) in d_outputs:
-                        out_vec = d_outputs["Xsurf_%s" % (out_famGroup)]
+                    if "X_%s" % (out_famGroup) in d_outputs:
+                        out_vec = d_outputs["X_%s" % (out_famGroup)]
                         out_vec = out_vec.reshape(out_vec.size // 3, 3)
 
-                        in_vec = np.zeros(d_inputs["Xsurf_%s" % (in_famGroup)].shape)
+                        in_vec = np.zeros(d_inputs["X_%s" % (in_famGroup)].shape)
                         in_vec = in_vec.reshape(in_vec.size // 3, 3)
 
                         # reverse the mapping!
                         self.solver.mapVector(out_vec, out_famGroup, in_famGroup, in_vec)
 
-                        self.d_inputs[in_var_name] += in_vec.flatten(order="C")
+                        d_inputs[in_var_name] += in_vec.flatten(order="C")
 
 
 class Geo_Disp(ExplicitComponent):
@@ -608,6 +579,11 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                 d_outputs["f_a"] += fdot.flatten()
 
             if "heatflux" in d_outputs:
+                hftmp = np.zeros((hfdot.size, 3))
+                hftmp[:, 0] = hfdot
+
+                hfdot = self.solver.mapVector(hfdot, self.solver.allWallsGroup, self.solver.allIsothermalWallsGroup)
+                hfdot = hfdot[:,0]
                 d_outputs["heatflux"] += hfdot.flatten()
 
             for name in funcsdot:
@@ -635,7 +611,14 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                 fBar = None
 
             if "heatflux" in d_outputs:
-                hfBar = d_outputs["heatflux"]
+                hf = d_outputs["heatflux"]
+
+                # make the vector into the look like a coordinate vector
+                hfBar = np.zeros((hf.size, 3))
+                hfBar[:, 0] = hf
+
+                hfBar = self.solver.mapVector(hfBar, self.solver.allIsothermalWallsGroup, self.solver.allWallsGroup)
+                hfBar = hfBar[:, 0]
             else:
                 hfBar = None
 
