@@ -1,7 +1,8 @@
 import openmdao.api as om
-from pygeo import DVGeometry
+from pygeo import DVGeometry, DVConstraints
 from mpi4py import MPI
 import numpy as np
+import os 
 
 # class that actually calls the dvgeometry methods
 class OM_DVGEOCOMP(om.ExplicitComponent):
@@ -81,14 +82,14 @@ class DVGeoComp(om.ExplicitComponent):
     def initialize(self):
 
         self.options.declare('ffd_file', allow_none=False)
-        # self.options['distributed'] = True
-
+        self.options.declare('output_dir', default='./')
         self.initialized = False
 
         self.options['distributed'] = True
 
         # function used to add all the design variables, etc.
         self.options.declare('setup_dvgeo',recordable=False)
+        self.options.declare('setup_dvcon', default=None, recordable=False)
 
 
     def setup(self):
@@ -99,55 +100,170 @@ class DVGeoComp(om.ExplicitComponent):
         getDVGeo = self.options['setup_dvgeo']
         self.DVGeo = getDVGeo(ffd_file)
         self.add_input('pts', shape_by_conn=True)
-
+    
         # iterate over the design variables for this comp
-        varLists = {'globalVars':self.DVGeo.DV_listGlobal,
-                   'localVars':self.DVGeo.DV_listLocal,
-                   'sectionlocalVars':self.DVGeo.DV_listSectionLocal,
-                   'spanwiselocalVars':self.DVGeo.DV_listSpanwiseLocal}
-        for lst in varLists:
-            for key in varLists[lst]:
-                dv = varLists[lst][key]
-                print(dv.value.shape)
-                self.add_input(dv.name, src_indices=np.arange(dv.value.size), val=np.zeros(dv.value.shape))
+        
+        dvs = self.DVGeo.getValues()
+        
+        for key, val in dvs.items():
+            print('adding', key, val.size)
+            self.add_input(key, src_indices=np.arange(val.size), val=val.real)
+        
         self.add_output('deformed_pts', copy_shape='pts')
+
+        self.count = 0
+        # --- Setup the constraints ---
+        if self.options['setup_dvcon']:
+            getDVCon = self.options['setup_dvcon']
+
+            self.DVCon = DVConstraints()
+            self.DVCon.setDVGeo(self.DVGeo)
+
+            # set a FAKE surface so the constraints will be initalized
+            # triangulate the FFD to use as the fake surface
+
+            # take the first vol for now, in the future this should loop over each and give them different names
+            conn = self.DVGeo.FFD.topo.lIndex[0]
+
+            def getTriMesh(face_conn):
+                "returns the triagnulated mesh for given face points"
+
+                face_p = [[], [], []]
+
+                for i in range(face_conn.shape[0]-1):
+                    for j in range(face_conn.shape[1]-1):
+                        loc_pts = self.DVGeo.FFD.coef[face_conn[i:i+2, j:j+2]]
+
+                        tri_1_pts = np.array([loc_pts[0, 0], loc_pts[1,0], loc_pts[0,1]])
+                        tri_2_pts = np.array([loc_pts[1, 1], loc_pts[0,1], loc_pts[1,0]])
+
+
+                        for p in range(len(face_p)):
+                            face_p[p].append(tri_1_pts[p])
+                            face_p[p].append(tri_2_pts[p])
+
+                return face_p
+
+
+
+            surf_p = [[], [], []]
+            # iterate over highest and lowest index of each dimension
+            for i in [0, -1]:
+
+                for idx_dim in range(3):
+                    s = slice(None)  # :
+
+                    slicer = [s]*3  # [:, :, :]
+                    slicer[idx_dim] = i   # [:, :, i]
+                    nodes = conn[tuple(slicer)]
+                    face_p = getTriMesh(nodes)
+
+                    for p in range(len(face_p)):
+                        surf_p[p].extend(face_p[p])
+
+            p0 = np.array(surf_p[0])
+            p1 = np.array(surf_p[1])
+            p2 = np.array(surf_p[2])
+
+            self.DVCon.setSurface(surf_p, format='point-point')
+
+            #add all the constraints to the con object
+            self.DVCon = getDVCon(self.DVCon)
+
+            # loop over linear contraints
+            for conName, con in self.DVCon.linearCon.items():
+
+                print(f'for conName {conName}, adding {con.name} with size {con.ncon}')
+                self.add_output(con.name, shape=con.ncon)
+
+            for con_type, cons in self.DVCon.constraints.items():
+                for conName, con in cons.items():
+
+
+                    print(f'for conName {conName}, adding {con.name} with size {con.nCon}')
+                    self.add_output(con.name, shape=con.nCon)
+
+
+            
+            self.add_input('tri_surf_p0', shape_by_conn=True)
+            self.add_input('tri_surf_v1', shape_by_conn=True)
+            self.add_input('tri_surf_v2', shape_by_conn=True)
+
 
     def compute(self, inputs, outputs):
         self.DVGeo.setDesignVars(inputs)
 
         if not self.initialized:
+            self.initialized = True
             pts = inputs['pts']
-            self.DVGeo.addPointSet(pts.reshape(pts.size//3, 3), 'pt_set')
+            pts = pts.reshape(pts.size//3, 3)
+            
+ 
 
-        # self.DVGeo.demoDesignVars('/home/josh/Dropbox/mphys_aerothermal/conjugate_hx_naca0012/output/', pointSet='pt_set')
-        # self.DVGeo.checkDerivatives('pt_set')
-        # quit()
+            self.DVGeo.addPointSet(pts, 'pt_set', eps=1e-10, recompute=False)
 
-        outputs['deformed_pts'] = self.DVGeo.update('pt_set').flatten()
+            if self.options['setup_dvcon']:
+                # initalize the constraint object too if we have one
+
+                surf = [inputs['tri_surf_p0'], inputs['tri_surf_v1'], inputs['tri_surf_v2']]
+
+                self.DVCon.setSurface(surf, format='point-point')
+
+                self.DVCon = self.options['setup_dvcon'](self.DVCon)
+        
+
+        pts = self.DVGeo.update('pt_set')
+        outputs['deformed_pts'] = pts.flatten()
+        if self.options['setup_dvcon']:
+            funcs = {}
+
+            self.DVCon.evalFunctions(funcs, includeLinear=True)
+
+            for func, val in funcs.items():
+                outputs[func] = val
+
+
+        # write the tecplot data out for viz
+        self.DVGeo.writeTecplot(os.path.join(self.options['output_dir'], '/ffd/iter_{:03d}.dat'.format(self.count)), solutionTime=self.count)
+        # self.DVGeo.writeTecplot('./output/ffd/iter_{:03d}.dat'.format(self.count), solutionTime=self.count)
+        self.DVGeo.writePointSet('pt_set', os.path.join(self.options['output_dir'], '/pts/pts_{:03d}'.format(self.count)))
+        
+        if self.options['setup_dvcon']:
+            self.DVCon.writeTecplot(os.path.join(self.options['output_dir'], "/pts/cons_{:03d}.dat".format(self.count)), solutionTime=self.count)
+                
+        self.count += 1
+
+
 
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
 
         # only do the computations when we have more than zero entries in d_inputs in the reverse mode
         ni = len(list(d_inputs.keys()))
-        print(list(d_inputs.keys()))
 
         # import ipdb; ipdb.set_trace()
         if mode == 'rev' and ni > 0:
             # for ptSetName in self.DVGeo.ptSetNames:
-                ptSetName = 'pt_set'
-                dout = d_outputs['deformed_pts'].reshape(len(d_outputs['deformed_pts'])//3, 3)
-                xdot = self.DVGeo.totalSensitivityTransProd(dout, ptSetName)
-                # loop over dvs and accumulate
-                xdotg = {}
-                for k in xdot:
-                    # check if this dv is present
-                    if k in d_inputs:
-                        # do the allreduce
-                        # TODO reove the allreduce when this is fixed in openmdao
-                        # reduce the result ourselves for now. ideally, openmdao will do the reduction itself when this is fixed. this is because the bcast is also done by openmdao (pyoptsparse, but regardless, it is not done here, so reduce should also not be done here)
-                        print(self.comm.rank, k , xdot)
-                        xdotg[k] = self.comm.allreduce(xdot[k], op=MPI.SUM)
+            ptSetName = 'pt_set'
+            dout = d_outputs['deformed_pts'].reshape(len(d_outputs['deformed_pts'])//3, 3)
+            xdot = self.DVGeo.totalSensitivity(dout, ptSetName, comm=self.comm) # this has a all reduce inside
+            # loop over dvs and accumulate
+            
+            xdotg = {}
+            for k in xdot:
+                # check if this dv is present
+                if k in d_inputs:
+                    d_inputs[k] += xdot[k].flatten()
 
-                        # accumulate in the dict
-                        d_inputs[k] += xdotg[k]
+            if self.options['setup_dvcon']:
+
+                funcsSens = {}
+                self.DVCon.evalFunctionsSens(funcsSens, includeLinear=True)
+                for constraintname in funcsSens:
+                    for dvname in funcsSens[constraintname]:
+                        if dvname in d_inputs:
+                            dcdx = funcsSens[constraintname][dvname]
+                            # if self.comm.rank == 0:
+                            dout = d_outputs[constraintname]
+                            jvtmp = np.dot(np.transpose(dcdx),dout)
+                            d_inputs[dvname] += jvtmp

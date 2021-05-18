@@ -98,24 +98,23 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         temp_cond  = np.array(inputs['temp_cond'],dtype=self.meld_dtype)
 
 
-        print('meld set mesh')
         self.meldThermal.setStructNodes(x_cond0)
         self.meldThermal.setAeroNodes(x_conv0)
 
-        print('meld init')
         if not self.initialized_meld:
             self.meldThermal.initialize()
             self.initialized_meld = True
 
 
-        print('transfering temps')
         self.meldThermal.transferTemp(temp_cond,temp_conv)
         outputs['temp_conv'] = temp_conv
 
-        print('temp_conv')
-        print(temp_conv)
+        # print('-------------------------------------------------------')
+        # print('avg temp in', np.mean(np.array(temp_cond)), 'out', np.mean(np.array(temp_conv)))
+        # print('-------------------------------------------------------')
+        # print('temp_conv')
+        # print(temp_conv)
 
-        print('avg temp in', np.mean(np.array(temp_cond)), 'out', np.mean(np.array(temp_conv)))
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
         """
@@ -154,7 +153,6 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
         if mode == 'rev':
             if 'temp_conv' in d_outputs:
                 dtemp_conv = np.array(d_outputs['temp_conv'],dtype=self.meld_dtype)
-
                 if 'temp_cond' in d_inputs:
                     # dtemp_conv/dtemp_cond^T * psi = - dD/dtemp_cond^T psi
 
@@ -163,18 +161,16 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
                     meld.applydTdtSTrans(dtemp_conv,prod)
 
                     d_inputs['temp_cond'] += np.array(prod,dtype=np.float64)
-
                 # dtemp_conv/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
                 if 'x_conv0' in d_inputs:
                     prod = np.zeros(d_inputs['x_conv0'].size,dtype=self.meld_dtype)
                     meld.applydLdxA0(dtemp_conv,prod)
-                    d_inputs['x_conv0'] -= np.array(prod,dtype=float)
+                    d_inputs['x_conv0'] -= np.array(prod,dtype=np.float64)
 
                 if 'x_cond0' in d_inputs:
                     prod = np.zeros(d_inputs['x_cond0'].size,dtype=self.meld_dtype)
                     meld.applydLdxS0(dtemp_conv,prod)
-                    d_inputs['x_cond0'] -= np.array(prod,dtype=float)
-
+                    d_inputs['x_cond0'] -= np.array(prod,dtype=np.float64)
 
 
 
@@ -221,21 +217,20 @@ class MELDThermal_heatflux_xfer(om.ExplicitComponent):
         x_cond0 = np.array(inputs['x_cond0'],dtype=self.meld_dtype)
         x_conv0 = np.array(inputs['x_conv0'],dtype=self.meld_dtype)
 
-        print('meld set mesh')
         self.meldThermal.setStructNodes(x_cond0)
         self.meldThermal.setAeroNodes(x_conv0)
 
-        print('meld init')
         if not self.initialized_meld:
             self.meldThermal.initialize()
             self.initialized_meld = True
 
         self.meldThermal.transferFlux(heatflux_conv,heatflux_cond)
         outputs['heatflux_cond'] = heatflux_cond
-
-        print('-------------------------------------------------------------------')
-        print('sum heat in ', np.sum(heatflux_conv), 'out', np.sum(heatflux_cond))
-        print('-------------------------------------------------------------------')
+        # print('-------------------------------------------------------------------')
+        # print('sum heat in ', np.sum(heatflux_conv), 'out', np.sum(heatflux_cond))
+        # print('-------------------------------------------------------------------')
+        # print('heatflux out', heatflux_cond)
+        # import ipdb; ipdb.set_trace()
 
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
@@ -251,16 +246,16 @@ class MELDThermal_heatflux_xfer(om.ExplicitComponent):
 
         meld = self.meldThermal
         if mode == 'fwd':
-            if 'heat_xfer_cond' in d_outputs:
-                if 'heat_xfer_conv' in d_inputs:
+            if 'heatflux_cond' in d_outputs:
+                if 'heatflux_conv' in d_inputs:
 
-                    d_heat_xfer_conv =  np.array(d_inputs['heat_xfer_conv'],dtype=self.meld_dtype)
+                    d_heatflux_conv =  np.array(d_inputs['heatflux_conv'],dtype=self.meld_dtype)
 
 
-                    prod = np.zeros( d_outputs['heat_xfer_cond'].size,dtype=self.meld_dtype)
+                    prod = np.zeros( d_outputs['heatflux_cond'].size,dtype=self.meld_dtype)
 
-                    meld.applydQdqA(d_heat_xfer_conv,prod)
-                    d_outputs['heat_xfer_cond'] += np.array(prod,dtype=float)
+                    meld.applydQdqA(d_heatflux_conv,prod)
+                    d_outputs['heatflux_cond'] += np.array(prod,dtype=np.float64)
 
                 if 'x_conv0' in d_inputs:
                     if self.check_partials:
@@ -275,28 +270,26 @@ class MELDThermal_heatflux_xfer(om.ExplicitComponent):
                         raise ValueError('forward mode requested but not implemented')
 
         if mode == 'rev':
-            if 'heat_xfer_cond' in d_outputs:
-                dheat_xfer_cond = np.array(d_outputs['heat_xfer_cond'],dtype=self.meld_dtype)
 
-                if 'heat_xfer_conv' in d_inputs:
-                    # dheat_xfer_cond/dheat_xfer_conv^T * psi = - dD/dheat_xfer_conv^T psi
+            if 'heatflux_cond' in d_outputs:
+                dheatflux_cond = np.array(d_outputs['heatflux_cond'],dtype=self.meld_dtype)
+                if 'heatflux_conv' in d_inputs:
 
-                    prod = np.zeros(d_inputs['heat_xfer_conv'].size,dtype=self.meld_dtype)
+                    prod = np.zeros(d_inputs['heatflux_conv'].size,dtype=self.meld_dtype)
 
-                    meld.applydQdqATrans(dheat_xfer_cond,prod)
+                    meld.applydQdqATrans(dheatflux_cond,prod)
 
-                    d_inputs['heat_xfer_conv'] += np.array(prod,dtype=np.float64)
-
-                # dheat_xfer_cond/dx_a0^T * psi = - psi^T * dD/dx_a0 in F2F terminology
+                    d_inputs['heatflux_conv'] += np.array(prod,dtype=np.float64)
+                    
                 if 'x_conv0' in d_inputs:
                     prod = np.zeros(d_inputs['x_conv0'].size,dtype=self.meld_dtype)
-                    meld.applydLdxA0(dheat_xfer_cond,prod)
-                    d_inputs['x_conv0'] += np.array(prod,dtype=float)
+                    meld.applydLdxA0(dheatflux_cond,prod)
+                    d_inputs['x_conv0'] += np.array(prod,dtype=np.float64)
 
                 if 'x_cond0' in d_inputs:
                     prod = np.zeros(d_inputs['x_cond0'].size,dtype=self.meld_dtype)
-                    meld.applydLdxS0(dheat_xfer_cond,prod)
-                    d_inputs['x_cond0'] += np.array(prod,dtype=float)
+                    meld.applydLdxS0(dheatflux_cond,prod)
+                    d_inputs['x_cond0'] += np.array(prod,dtype=np.float64)
 
 
 

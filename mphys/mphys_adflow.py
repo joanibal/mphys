@@ -33,6 +33,8 @@ class AdflowObjBuilder(ObjBuilder):
             else:
                 mesh = USMesh(options=self.options["idwarp"], comm=comm)
                 CFDSolver = ADFLOW(options=self.options["adflow"], comm=comm)
+                # HACK there should be a general way to add user defined functions
+                CFDSolver.addFunction("area", "isothermalwall", name="hot_area")
 
             CFDSolver.setMesh(mesh)
             self.solver = CFDSolver
@@ -57,7 +59,6 @@ class AeroProblemMixIns:
             name = args[0]
             tmp[name] = inputs[name]
 
-        print(tmp)
         ap.setDesignVars(tmp)
 
     def add_BCVars_to_ap(self,CFDSolver, ap, BCVar, famGroup):
@@ -76,7 +77,6 @@ class AeroProblemMixIns:
             The same problem, but with the BCVar added as a design variabl
         """
         bc_data = CFDSolver.getBCData()
-        print(self.comm.rank, bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup))
         ap.setBCVar(BCVar, bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup), famGroup)
         ap.addDV(BCVar, familyGroup=famGroup, name=(BCVar + "_" + famGroup))
 
@@ -147,6 +147,7 @@ class AdflowMesh(ExplicitComponent):
 
         self.options.declare("family_groups", default=["allWalls"])
         self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
+        self.options.declare("triangulated_mesh", default=False)
         self.options["distributed"] = True
 
     def setup(self):
@@ -156,6 +157,13 @@ class AdflowMesh(ExplicitComponent):
         for famGroup in self.options["family_groups"]:
             coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order="C")
             self.add_output("X_%s" % (famGroup), val=coords, desc="surface points for %s" % (famGroup))
+
+            if self.options["triangulated_mesh"]:
+                tri_pts = self.solver.getTriangulatedMeshSurface(groupName=famGroup)
+
+                self.add_output(f'X_{famGroup}_p0', val=tri_pts[0], desc="surface points for %s" % (famGroup))
+                self.add_output(f'X_{famGroup}_v1', val=tri_pts[1], desc="surface points for %s" % (famGroup))
+                self.add_output(f'X_{famGroup}_v2', val=tri_pts[2], desc="surface points for %s" % (famGroup))
 
 class AdflowMapper(ExplicitComponent):
     """
@@ -198,7 +206,7 @@ class AdflowMapper(ExplicitComponent):
             if self.solver.dtype == 'D' and not self.under_complex_step:
                 in_vec = np.array(in_vec, dtype=self.solver.dtype)
                 out_vec = np.array(out_vec, dtype=self.solver.dtype)
-            # import ipdb; ipdb.set_trace()
+
             out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
             outputs["X_%s" % (out_famGroup)] = out_vec.flatten(order="C")
 
@@ -229,7 +237,7 @@ class AdflowMapper(ExplicitComponent):
 
                         in_vec = np.zeros(d_inputs["X_%s" % (in_famGroup)].shape)
                         in_vec = in_vec.reshape(in_vec.size // 3, 3)
-
+                        
                         # reverse the mapping!
                         self.solver.mapVector(out_vec, out_famGroup, in_famGroup, in_vec)
 
@@ -315,7 +323,6 @@ class AdflowWarper(ExplicitComponent):
                     dxS = d_inputs["x_a"]
                     dxV = self.solver.mesh.warpDerivFwd(dxS)
                     d_outputs["x_g"] += dxV
-                    print(dxV)
 
         elif mode == "rev":
             if "x_g" in d_outputs:
@@ -356,7 +363,6 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         self.add_output("q", shape=local_state_size)
 
         self.ap = self.options["aero_problem"]
-        print(self.options["BCDesVar"])
         for BCVar, famGroup in self.options["BCDesVar"].items():
             self.add_BCVars_to_ap(self.solver, self.ap, BCVar, famGroup)
 
@@ -385,7 +391,7 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         self.ap.solveFailed = False  # might need to clear this out?
         self.ap.fatalFail = False
 
-        self.solver(self.ap)
+        self.solver(self.ap, writeSolution=False)
 
         outputs["q"] = self.solver.getStates()
 
@@ -397,7 +403,6 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         self.solver.setStates(outputs["q"])
 
     def apply_linear(self, inputs, outputs, d_inputs, d_outputs, d_residuals, mode):
-
         if mode == "fwd":
             if "q" in d_residuals:
                 xDvDot = {}
@@ -424,7 +429,7 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
                 wBar, xVBar, xDVBar = self.solver.computeJacobianVectorProductBwd(
                     resBar=resBar, wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True
                 )
-
+                
                 if "q" in d_outputs:
                     d_outputs["q"] += wBar
 
@@ -538,13 +543,10 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
 
         self.solver.evalFunctions(self.ap, funcs, eval_funcs)
 
-        print(funcs)
-        print(eval_funcs)
         for name in self.ap.evalFuncs:
             f_name = self._get_func_name(name)
             if f_name in funcs:
                 outputs[name.lower()] = funcs[f_name]
-
 
         if self.options["forces"]:
             outputs["f_a"] = self.solver.getForces().flatten(order="C")
@@ -600,10 +602,7 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                 # we have to check for 0 here, so we don't include any unnecessary variables in funcsBar
                 # becasue it causes Adflow to do extra work internally even if you give it extra variables, even if the seed is 0
                 if func_name in d_outputs and d_outputs[func_name] != 0.0:
-                    funcsBar[func_name] = d_outputs[func_name][0]
-                    # this stuff is fixed now. no need to divide
-                    # funcsBar[func_name] = d_outputs[func_name][0] / self.comm.size
-                    # print(self.comm.rank, func_name, funcsBar[func_name])
+                    funcsBar[func_name] = d_outputs[func_name][0]/self.comm.size # tmp fix while om is changing distibuted vars
 
             if "f_a" in d_outputs:
                 fBar = d_outputs["f_a"]
@@ -637,6 +636,46 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                     d_inputs[dv_name] += dv_bar.flatten()
 
 
+
+class ADflowWriteSolution(ExplicitComponent, AeroProblemMixIns):
+    """
+    This componeent is used only for outputing a solution file for postprocessing
+    """
+    def initialize(self):
+        self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
+        self.options["distributed"] = True
+
+
+    def setup(self):
+
+        self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
+
+        local_state_size = self.solver.getStateSize()
+        local_coord_size = self.solver.mesh.getSolverGrid().size
+        s_list = self.comm.allgather(local_state_size)
+        n_list = self.comm.allgather(local_coord_size)
+        irank = self.comm.rank
+
+        s1 = np.sum(s_list[:irank])
+        s2 = np.sum(s_list[: irank + 1])
+        n1 = np.sum(n_list[:irank])
+        n2 = np.sum(n_list[: irank + 1])
+
+        self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
+        self.add_input("q", src_indices=np.arange(s1, s2, dtype=int), shape=local_state_size)
+        
+        self.counter = 0 
+
+
+    def compute(self, inputs, outputs):
+
+        # Set the warped mesh
+        self.solver.adflow.warping.setgrid(inputs["x_g"])
+        self.solver.setStates(inputs["q"])
+
+        self.solver.writeSolution(number=self.counter)
+        self.counter += 1 
+        
 class AdflowGroup(SharedObjGroup):
     def initialize(self):
         super().initialize()

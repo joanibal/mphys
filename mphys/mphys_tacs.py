@@ -107,7 +107,7 @@ class TacsSurfaceToVolume(om.ExplicitComponent):
         self.options.declare("obj_builders", default={TacsObjsBuilder: None}, recordable=False)
         self.options.declare("surface_mapping", default= None, recordable=False)
 
-        self.options['distributed'] = False
+        self.options['distributed'] = True
 
     def setup(self):
 
@@ -151,7 +151,7 @@ class TacsVolumeToSurface(om.ExplicitComponent):
         self.options.declare("surface_mapping", default= None, recordable=False)
         self.options.declare("mesh", default= False)
 
-        self.options['distributed'] = False
+        self.options['distributed'] = True
 
     def setup(self):
 
@@ -243,7 +243,6 @@ class TacsSolver(om.ImplicitComponent):
         self.old_dvs = None
 
         self.options.declare("obj_builders", default={TacsObjsBuilder: None}, recordable=False)
-        self.options.declare("f5_writer", default= None, recordable=False)
         self.options.declare("elem_dv", default= False)
 
 
@@ -426,7 +425,6 @@ class TacsSolver(om.ImplicitComponent):
 
         force_array = force.getArray()
         force_array[:] = inputs['b']
-
         self.tacs.applyBCs(force)
 
         # copy the current value of the res vector into a local coppy
@@ -449,9 +447,6 @@ class TacsSolver(om.ImplicitComponent):
         ans_array = ans.getArray()
         outputs['u'] = ans_array[:]
 
-
-        if self.options['f5_writer'] is not None:
-            self.options['f5_writer'](self.options["obj_builders"][TacsObjsBuilder].TACS, self.tacs)
 
 
     def solve_linear(self,d_outputs,d_residuals,mode):
@@ -482,7 +477,6 @@ class TacsSolver(om.ImplicitComponent):
 
             psi_array = adjoint.getArray()
             tacs.applyBCs(adjoint)
-
             d_residuals['u'] = psi_array.copy()
 
 
@@ -552,17 +546,16 @@ class TacsSolver(om.ImplicitComponent):
                         tacs.addAdjointResXptSensProducts([psi], [xpt_sens])
                     except AttributeError:
                         tacs.evalAdjointResXptSensProduct(psi, xpt_sens)
+                    
+                    d_x = np.array(xpt_sens_array[:],dtype=float)
+                    d_inputs['x_s0'] += d_x
 
-                    d_inputs['x_s0'] += np.array(xpt_sens_array[:],dtype=float)
 
                 if 'dv_struct' in d_inputs:
                     adj_res_product  = np.zeros(d_inputs['dv_struct'].size,dtype=TACS.dtype)
                     self.tacs.evalAdjointResProduct(psi, adj_res_product)
 
-                    # TACS has already done a parallel sum (mpi allreduce) so
-                    # only add the product on one rank
-                    if self.comm.rank == 0:
-                        d_inputs['dv_struct'] +=  np.array(adj_res_product,dtype=float)
+                    d_inputs['dv_struct'] +=  np.array(adj_res_product,dtype=float)
 
     def _design_vector_changed(self,x):
         if self.x_save is None:
@@ -573,6 +566,175 @@ class TacsSolver(om.ImplicitComponent):
             return True
         else:
             return False
+
+
+class TacsWriteSolution(om.ExplicitComponent):
+    """
+    Component to perform TACS steady analysis
+
+    Assumptions:
+        - User will provide a tacs_solver_setup function that gives some pieces
+          required for the tacs solver
+          => tacs, mat, pc, gmres, struct_ndv = tacs_solver_setup(comm)
+        - The TACS steady residual is R = K * u_s - f_s = 0
+
+    """
+    def initialize(self):
+        self.options['distributed'] = True
+
+        self.options.declare("obj_builders", default={TacsObjsBuilder: None}, recordable=False)
+        self.options.declare("f5_writer", default= None, recordable=False)
+        self.options.declare("elem_dv", default= False)
+        
+        self.count = 0
+
+    def setup(self):
+
+        tacs_objs =  self.options["obj_builders"][TacsObjsBuilder].get_obj(self.comm)
+
+        self.mesh      = tacs_objs.mesh
+        self.tacs      = tacs_objs.assembler
+        self.mat       = tacs_objs.mat
+        self.pc        = tacs_objs.pc
+        self.gmres     = tacs_objs.ksp
+
+
+        self.ndv = self.mesh.getNumComponents()
+
+        # create some TACS bvecs that will be needed later
+        self.res        = self.tacs.createVec()
+        self.force      = self.tacs.createVec()
+        self.ans        = self.tacs.createVec()
+        self.struct_rhs = self.tacs.createVec()
+        self.psi      = self.tacs.createVec()
+        self.xpt_sens   = self.tacs.createNodeVec()
+
+
+
+        state_size = self.ans.getArray().size
+        node_size  = self.xpt_sens.getArray().size
+        self.ndof = int(state_size/(node_size/3))
+
+
+        s_list = self.comm.allgather(state_size)
+        n_list = self.comm.allgather(node_size)
+        irank  = self.comm.rank
+
+        s1 = np.sum(s_list[:irank])
+        s2 = np.sum(s_list[:irank+1])
+        n1 = np.sum(n_list[:irank])
+        n2 = np.sum(n_list[:irank+1])
+
+
+        self.xpts  = self.tacs.createNodeVec()
+        self.tacs.getNodes(self.xpts)
+
+        # OpenMDAO setup
+        xpts_arr = self.xpts.getArray()
+        # inputs
+        self.add_input('x_s0', val=xpts_arr , src_indices=np.arange(n1, n2, dtype=int), desc='structural node coordinates')
+        if self.options['elem_dv']:
+            self.add_input('dv_struct', shape=self.ndv, desc='tacs design variables')
+
+
+        # outputs
+        self.add_input('u', shape=state_size, src_indices=np.arange(s1, s2, dtype=int), desc='state vector, e.g. displacements for temperatures')
+
+
+
+
+    def _need_update(self,inputs):
+
+
+        if self.old_dvs is None:
+            self.old_dvs = inputs['dv_struct'].copy()
+            return True
+
+        for dv, dv_old in zip(inputs['dv_struct'],self.old_dvs):
+            if np.abs(dv - dv_old) > 1e-7:
+                self.old_dvs = inputs['dv_struct'].copy()
+                return True
+
+        return False
+
+    def _update_internal(self,inputs,outputs=None):
+        if not 'dv_struct' in inputs:
+            pc     = self.pc
+            alpha = 1.0
+            beta  = 0.0
+            gamma = 0.0
+
+            xpts = self.tacs.createNodeVec()
+            self.tacs.getNodes(xpts)
+            xpts_array = xpts.getArray()
+            xpts_array[:] = inputs['x_s0']
+            self.tacs.setNodes(xpts)
+
+            self.res = self.tacs.createVec()
+            res_array = self.res.getArray()
+            res_array[:] = 0.0
+
+            self.tacs.assembleJacobian(alpha,beta,gamma,self.res,self.mat)
+            pc.factor()
+
+            return
+
+        if self._need_update(inputs):
+            self.tacs.setDesignVars(np.array(inputs['dv_struct'],dtype=TACS.dtype))
+
+            xpts = self.tacs.createNodeVec()
+            self.tacs.getNodes(xpts)
+            xpts_array = xpts.getArray()
+            xpts_array[:] = inputs['x_s0']
+            self.tacs.setNodes(xpts)
+
+            pc     = self.pc
+            alpha = 1.0
+            beta  = 0.0
+            gamma = 0.0
+
+            xpts = self.tacs.createNodeVec()
+            self.tacs.getNodes(xpts)
+            xpts_array = xpts.getArray()
+            xpts_array[:] = inputs['x_s0']
+            self.tacs.setNodes(xpts)
+
+            self.res = self.tacs.createVec()
+            res_array = self.res.getArray()
+            res_array[:] = 0.0
+
+            self.tacs.assembleJacobian(alpha,beta,gamma,self.res,self.mat)
+            pc.factor()
+
+        if outputs is not None:
+            ans = self.ans
+            ans_array = ans.getArray()
+            ans_array[:] = outputs['u_s']
+            self.tacs.applyBCs(ans)
+
+            self.tacs.setVariables(ans)
+
+    def compute(self, inputs, outputs):
+        tacs   = self.tacs
+        force  = self.force
+        ans    = self.ans
+        pc     = self.pc
+        gmres  = self.gmres
+
+
+
+        self._update_internal(inputs)
+
+        # Set the state variables into the self.tacs object
+        ans_array = ans.getArray()
+        ans_array[:] = inputs['u']
+        self.tacs.setBCs(ans)
+        self.tacs.setVariables(ans)
+
+        self.options['f5_writer'](self.options["obj_builders"][TacsObjsBuilder].TACS, self.tacs, self.count)
+        self.count += 1
+            
+
 
 
 class TacsFunctions(om.ExplicitComponent):
@@ -920,7 +1082,6 @@ class TACSGroup(Analysis):
         self.options.declare('solver_options')
         self.options.declare('group_options')
         self.options.declare('check_partials', default=False)
-
 
 
         self.group_options = {
