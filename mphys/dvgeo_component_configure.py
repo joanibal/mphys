@@ -202,6 +202,14 @@ class DVGeoComp(om.ExplicitComponent):
 
             self.DVGeo.addPointSet(pts, 'pt_set', eps=1e-10, recompute=False)
 
+            
+            if MPI.COMM_WORLD.rank == 0:
+                
+                for folder in ['ffd', 'pts']:
+                    path = os.path.join(self.options['output_dir'], folder)
+                    os.system("mkdir -p %s" % (path))
+
+
             if self.options['setup_dvcon']:
                 # initalize the constraint object too if we have one
 
@@ -224,12 +232,12 @@ class DVGeoComp(om.ExplicitComponent):
 
 
         # write the tecplot data out for viz
-        self.DVGeo.writeTecplot(os.path.join(self.options['output_dir'], '/ffd/iter_{:03d}.dat'.format(self.count)), solutionTime=self.count)
+        self.DVGeo.writeTecplot(os.path.join(self.options['output_dir'], 'ffd/iter_{:03d}.dat'.format(self.count)), solutionTime=self.count)
         # self.DVGeo.writeTecplot('./output/ffd/iter_{:03d}.dat'.format(self.count), solutionTime=self.count)
-        self.DVGeo.writePointSet('pt_set', os.path.join(self.options['output_dir'], '/pts/pts_{:03d}'.format(self.count)))
+        self.DVGeo.writePointSet('pt_set', os.path.join(self.options['output_dir'], 'pts/pts_{:03d}'.format(self.count)))
         
         if self.options['setup_dvcon']:
-            self.DVCon.writeTecplot(os.path.join(self.options['output_dir'], "/pts/cons_{:03d}.dat".format(self.count)), solutionTime=self.count)
+            self.DVCon.writeTecplot(os.path.join(self.options['output_dir'], "pts/cons_{:03d}.dat".format(self.count)), solutionTime=self.count)
                 
         self.count += 1
 
