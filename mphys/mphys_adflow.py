@@ -397,12 +397,21 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
 
     def linearize(self, inputs, outputs, residuals):
 
-        self.solver._setupAdjoint()
-
         self.set_ap_design_vars(self.ap, inputs)
         self.solver.setStates(outputs["q"])
 
+        # check if we changed APs, then we have to do a bunch of updates
+        if self.ap != self.solver.curAP:
+            # AP is changed, so we have to update the AP and
+            # run a residual to make sure all intermediate vairables are up to date
+            # we assume the AP has the last converged state information,
+            # which is automatically set in the getResidual call
+            self.solver.getResidual(self.ap)
+
     def apply_linear(self, inputs, outputs, d_inputs, d_outputs, d_residuals, mode):
+        
+        self.linearize(inputs, outputs, None)
+        
         if mode == "fwd":
             if "q" in d_residuals:
                 xDvDot = {}
@@ -441,6 +450,26 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
                         d_inputs[dv_name] += dv_bar.flatten()
 
     def solve_linear(self, d_outputs, d_residuals, mode):
+        
+        # check if we changed APs, then we have to do a bunch of updates
+        if self.ap != self.solver.curAP:
+            # AP is changed, so we have to update the AP and
+            # run a residual to make sure all intermediate vairables are up to date
+            # we assume the AP has the last converged state information,
+            # which is automatically set in the getResidual call
+            self.solver.getResidual(self.ap)
+
+        # the adjoint might not be set up regardless if we changed APs
+        # this is because the first call with any AP will not have this set up, so we have to check
+        # if we changed APs, then we also freed adjoint memory,
+        # and then again we would need to setup adjoint again
+        # finally, we generally want to avoid extra calls here
+        # because this routine can be call multiple times back to back in a LBGS self.solver.
+        if not self.solver.adjointSetup:
+            self.solver._setupAdjoint()
+
+
+        
         if mode == "fwd":
             d_outputs["q"] += self.solver.solveDirectForRHS(d_residuals["q"])
         elif mode == "rev":
@@ -556,6 +585,19 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
 
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
+        self.set_ap_design_vars(self.ap, inputs)
+
+
+        # check if we changed APs, then we have to do a bunch of updates
+        if self.ap != self.solver.curAP:
+            # AP is changed, so we have to update the AP and
+            # run a residual to make sure all intermediate vairables are up to date
+            # we assume the AP has the last converged state information,
+            # which is automatically set in the getResidual call
+            self.solver.getResidual(self.ap)
+
+
+        
         if mode == "fwd":
             xDvDot = {}
             for key in ap.DVs:
