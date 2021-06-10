@@ -17,8 +17,9 @@ from .analysis import Analysis, SharedObjGroup
 
 
 class AdflowObjBuilder(ObjBuilder):
-    def __init__(self, options, complexify=False):
+    def __init__(self, options, func=None, complexify=False):
         super().__init__(options)
+        self.func = func
         self.complexify = complexify
 
         self.obj_built = False
@@ -33,9 +34,10 @@ class AdflowObjBuilder(ObjBuilder):
             else:
                 mesh = USMesh(options=self.options["idwarp"], comm=comm)
                 CFDSolver = ADFLOW(options=self.options["adflow"], comm=comm)
-                # HACK there should be a general way to add user defined functions
-                CFDSolver.addFunction("area", "isothermalwall", name="hot_area")
-
+                
+            if self.func:
+                self.func(CFDSolver)
+            
             CFDSolver.setMesh(mesh)
             self.solver = CFDSolver
 
