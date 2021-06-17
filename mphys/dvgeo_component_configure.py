@@ -81,7 +81,7 @@ class DVGeoComp(om.ExplicitComponent):
 
     def initialize(self):
 
-        self.options.declare('ffd_file', allow_none=False)
+        self.options.declare('ffd_files', allow_none=False)
         self.options.declare('output_dir', default='./')
         self.initialized = False
 
@@ -91,14 +91,16 @@ class DVGeoComp(om.ExplicitComponent):
         self.options.declare('setup_dvgeo',recordable=False)
         self.options.declare('setup_dvcon', default=None, recordable=False)
 
-
+        # flag to prevent the jacobian from being recomputed unecessarly 
+        self.update_jac = False
+        
     def setup(self):
         # create the DVGeo object that does the computations
-        ffd_file = self.options['ffd_file']
-        # self.DVGeo = DVGeometry(ffd_file)
+        ffd_files = self.options['ffd_files']
+        # self.DVGeo = DVGeometry(ffd_files)
 
         getDVGeo = self.options['setup_dvgeo']
-        self.DVGeo = getDVGeo(ffd_file)
+        self.DVGeo = getDVGeo(ffd_files)
         self.add_input('pts', shape_by_conn=True)
     
         # iterate over the design variables for this comp
@@ -183,7 +185,6 @@ class DVGeoComp(om.ExplicitComponent):
                     print(f'for conName {conName}, adding {con.name} with size {con.nCon}')
                     self.add_output(con.name, shape=con.nCon)
 
-
             
             self.add_input('tri_surf_p0', shape_by_conn=True)
             self.add_input('tri_surf_v1', shape_by_conn=True)
@@ -232,15 +233,19 @@ class DVGeoComp(om.ExplicitComponent):
 
 
         # write the tecplot data out for viz
-        self.DVGeo.writeTecplot(os.path.join(self.options['output_dir'], 'ffd/iter_{:03d}.dat'.format(self.count)), solutionTime=self.count)
+        self.DVGeo.writeTecplot(os.path.join(self.options['output_dir'], f'ffd/iter_{self.name}_{self.count:03d}_{self.comm.rank}.dat'), solutionTime=self.count)
         # self.DVGeo.writeTecplot('./output/ffd/iter_{:03d}.dat'.format(self.count), solutionTime=self.count)
-        self.DVGeo.writePointSet('pt_set', os.path.join(self.options['output_dir'], 'pts/pts_{:03d}'.format(self.count)))
+        self.DVGeo.writePointSet('pt_set', os.path.join(self.options['output_dir'], f'pts/pts_{self.name}_{self.count:03d}_{self.comm.rank}'), solutionTime=self.count)
         
         if self.options['setup_dvcon']:
-            self.DVCon.writeTecplot(os.path.join(self.options['output_dir'], "pts/cons_{:03d}.dat".format(self.count)), solutionTime=self.count)
+            self.DVCon.writeTecplot(os.path.join(self.options['output_dir'], f"pts/cons_{self.name}_{self.count:03d}_{self.comm.rank}.dat"), solutionTime=self.count)
                 
         self.count += 1
-
+        
+        
+        # we ran a compute so the inputs changed. update the dvcon jac
+        # next time the jacvec product routine is called
+        self.update_jac = True
 
 
 
@@ -254,23 +259,36 @@ class DVGeoComp(om.ExplicitComponent):
             # for ptSetName in self.DVGeo.ptSetNames:
             ptSetName = 'pt_set'
             dout = d_outputs['deformed_pts'].reshape(len(d_outputs['deformed_pts'])//3, 3)
-            xdot = self.DVGeo.totalSensitivity(dout, ptSetName, comm=self.comm) # this has a all reduce inside
-            # loop over dvs and accumulate
             
-            xdotg = {}
-            for k in xdot:
-                # check if this dv is present
-                if k in d_inputs:
-                    d_inputs[k] += xdot[k].flatten()
+            # only do the calc. if d_output is not zero on ANY proc
+            local_all_zeros = np.all(dout == 0)
+            global_all_zeros = np.zeros(1, dtype=bool)
+            # we need to communicate for this check otherwise we may hang
+            self.comm.Allreduce([local_all_zeros, MPI.BOOL], [global_all_zeros, MPI.BOOL], MPI.LAND)
+
+            # global_all_zeros is a numpy array of size 1
+            if not global_all_zeros[0]:
+
+                    
+                xdot = self.DVGeo.totalSensitivity(dout, ptSetName, comm=self.comm) # this has a all reduce inside
+                # loop over dvs and accumulate
+                
+                for k in xdot:
+                    # check if this dv is present
+                    if k in d_inputs:
+                        d_inputs[k] += xdot[k].flatten()
 
             if self.options['setup_dvcon']:
 
-                funcsSens = {}
-                self.DVCon.evalFunctionsSens(funcsSens, includeLinear=True)
-                for constraintname in funcsSens:
-                    for dvname in funcsSens[constraintname]:
+                if self.update_jac:
+                    self.funcsSens = {}
+                    self.DVCon.evalFunctionsSens(self.funcsSens, includeLinear=True)
+
+
+                for constraintname in self.funcsSens:
+                    for dvname in self.funcsSens[constraintname]:
                         if dvname in d_inputs:
-                            dcdx = funcsSens[constraintname][dvname]
+                            dcdx = self.funcsSens[constraintname][dvname]
                             # if self.comm.rank == 0:
                             dout = d_outputs[constraintname]
                             jvtmp = np.dot(np.transpose(dcdx),dout)
