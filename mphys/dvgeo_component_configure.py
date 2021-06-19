@@ -97,7 +97,6 @@ class DVGeoComp(om.ExplicitComponent):
     def setup(self):
         # create the DVGeo object that does the computations
         ffd_files = self.options['ffd_files']
-        # self.DVGeo = DVGeometry(ffd_files)
 
         getDVGeo = self.options['setup_dvgeo']
         self.DVGeo = getDVGeo(ffd_files)
@@ -185,7 +184,6 @@ class DVGeoComp(om.ExplicitComponent):
                     print(f'for conName {conName}, adding {con.name} with size {con.nCon}')
                     self.add_output(con.name, shape=con.nCon)
 
-            
             self.add_input('tri_surf_p0', shape_by_conn=True)
             self.add_input('tri_surf_v1', shape_by_conn=True)
             self.add_input('tri_surf_v2', shape_by_conn=True)
@@ -199,8 +197,6 @@ class DVGeoComp(om.ExplicitComponent):
             pts = inputs['pts']
             pts = pts.reshape(pts.size//3, 3)
             
- 
-
             self.DVGeo.addPointSet(pts, 'pt_set', eps=1e-10, recompute=False)
 
             
@@ -233,12 +229,13 @@ class DVGeoComp(om.ExplicitComponent):
 
 
         # write the tecplot data out for viz
-        self.DVGeo.writeTecplot(os.path.join(self.options['output_dir'], f'ffd/iter_{self.name}_{self.count:03d}_{self.comm.rank}.dat'), solutionTime=self.count)
-        # self.DVGeo.writeTecplot('./output/ffd/iter_{:03d}.dat'.format(self.count), solutionTime=self.count)
-        self.DVGeo.writePointSet('pt_set', os.path.join(self.options['output_dir'], f'pts/pts_{self.name}_{self.count:03d}_{self.comm.rank}'), solutionTime=self.count)
-        
-        if self.options['setup_dvcon']:
-            self.DVCon.writeTecplot(os.path.join(self.options['output_dir'], f"pts/cons_{self.name}_{self.count:03d}_{self.comm.rank}.dat"), solutionTime=self.count)
+        if self.comm.rank == 0:
+            self.DVGeo.writeTecplot(os.path.join(self.options['output_dir'], f'ffd/iter_{self.name}_{self.count:03d}.dat'), solutionTime=self.count)
+            # self.DVGeo.writeTecplot('./output/ffd/iter_{:03d}.dat'.format(self.count), solutionTime=self.count)
+            self.DVGeo.writePointSet('pt_set', os.path.join(self.options['output_dir'], f'pts/pts_{self.name}_{self.count:03d}'), solutionTime=self.count)
+            
+            if self.options['setup_dvcon']:
+                self.DVCon.writeTecplot(os.path.join(self.options['output_dir'], f"pts/cons_{self.name}_{self.count:03d}.dat"), solutionTime=self.count)
                 
         self.count += 1
         
@@ -269,7 +266,6 @@ class DVGeoComp(om.ExplicitComponent):
             # global_all_zeros is a numpy array of size 1
             if not global_all_zeros[0]:
 
-                    
                 xdot = self.DVGeo.totalSensitivity(dout, ptSetName, comm=self.comm) # this has a all reduce inside
                 # loop over dvs and accumulate
                 
@@ -283,6 +279,7 @@ class DVGeoComp(om.ExplicitComponent):
                 if self.update_jac:
                     self.funcsSens = {}
                     self.DVCon.evalFunctionsSens(self.funcsSens, includeLinear=True)
+                    self.update_jac = False
 
 
                 for constraintname in self.funcsSens:
