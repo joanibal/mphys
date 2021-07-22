@@ -2,6 +2,7 @@ import numpy as np
 import pprint
 import copy
 
+from time import time
 from collections import OrderedDict
 from baseclasses import AeroProblem
 
@@ -116,7 +117,6 @@ class AeroProblemMixIns:
 
             self.add_input(name, val=val, src_indices=np.arange(s1, s2, dtype=int), units=kwargs["units"])
             # if self.comm.rank == 0:
-            print(irank, name, size, s1, s2)
 
     def add_ap_outputs(self, ap, units=None):
         # this is the external function to set the ap to this component
@@ -208,7 +208,7 @@ class AdflowMapper(ExplicitComponent):
             if self.solver.dtype == 'D' and not self.under_complex_step:
                 in_vec = np.array(in_vec, dtype=self.solver.dtype)
                 out_vec = np.array(out_vec, dtype=self.solver.dtype)
-
+            
             out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
             outputs["X_%s" % (out_famGroup)] = out_vec.flatten(order="C")
 
@@ -244,6 +244,138 @@ class AdflowMapper(ExplicitComponent):
                         self.solver.mapVector(out_vec, out_famGroup, in_famGroup, in_vec)
 
                         d_inputs[in_var_name] += in_vec.flatten(order="C")
+
+class AdflowNonUniqueMapper(ExplicitComponent):
+    """
+    Component to get the quantities for each node from the set of unique quantities
+    """
+
+    def initialize(self):
+        # self.options.declare('solver_options', default= {})
+
+        # self.options.declare("input_family_group", default=["allWalls"])
+        # self.options.declare("output_family_groups", default=["allWalls"])
+
+        self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
+        self.options.declare("mesh", default= False)
+        self.options["distributed"] = True
+        self.options.declare("family_group", default=["allWalls"])
+
+    def setup(self):
+
+        self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
+
+        
+
+        fam_group = self.options["family_group"]
+        coords = self.solver.getSurfaceCoordinates(groupName=fam_group).flatten(order="C")
+        coords = coords.reshape((-1,3))
+        
+        
+        
+        # Run the pointReduce on the CGNS nodes
+        coords_uniq, linkTmp, nUnique = self.solver.adflow.utils.pointreduce(coords.T, 1e-12)
+        coords_uniq = coords_uniq.T[:nUnique]
+    
+        linkTmp -= 1
+        
+        self.mapping = linkTmp
+            
+        
+        
+        
+        
+        if self.options['mesh']:
+            self.add_input("val_uniq", val=coords_uniq.flatten() )
+            self.add_output("val_nonuniq", val=coords.flatten() )
+        else:
+            # import ipdb; ipdb.set_trace()
+            self.add_input("val_uniq", shape=coords_uniq.shape[0] )
+            self.add_output("val_nonuniq", shape=coords.shape[0] )
+
+    def compute(self, inputs, outputs):
+        if self.options['mesh']:
+            coords_uniq = inputs["val_uniq"].reshape((-1,3))
+            coords = coords_uniq[self.mapping]
+            outputs["val_nonuniq"] = coords.flatten()
+        else:
+            outputs["val_nonuniq"] = inputs["val_uniq"][self.mapping]
+            # print(outputs["val_nonuniq"])
+            
+            
+class AdflowUniqueMapper(ExplicitComponent):
+    """
+    Component to get the quantities for each unique node
+    """
+
+    def initialize(self):
+        # self.options.declare('solver_options', default= {})
+
+        # self.options.declare("input_family_group", default=["allWalls"])
+        # self.options.declare("output_family_groups", default=["allWalls"])
+
+        self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
+        self.options.declare("mesh", default= False)
+        self.options["distributed"] = True
+        self.options.declare("family_group", default=["allWalls"])
+
+    def setup(self):
+
+        self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
+
+        
+
+        fam_group = self.options["family_group"]
+        coords = self.solver.getSurfaceCoordinates(groupName=fam_group).flatten(order="C")
+        coords = coords.reshape((-1,3))
+        
+        # Run the pointReduce on the CGNS nodes
+        coords_uniq, linkTmp, nUnique = self.solver.adflow.utils.pointreduce(coords.T, 1e-12)
+        coords_uniq = coords_uniq.T[:nUnique]
+    
+        linkTmp -= 1
+        
+        def get_unique_mask(link):
+            mask = np.zeros(link.size, dtype=bool)
+            idx_unique = np.ones((np.max(link)+1), dtype=bool)
+            
+            for idx, l in enumerate(link):
+                if idx_unique[l]:
+                    mask[idx] = True
+                    idx_unique[l] = False 
+            
+            return mask 
+        
+        self.mapping = get_unique_mask(linkTmp)
+            
+        # local_coord_size = coords.size
+        # n_list = self.comm.allgather(local_coord_size)
+        # irank = self.comm.rank
+
+        # n1 = np.sum(n_list[:irank])
+        # n2 = np.sum(n_list[: irank + 1])
+
+        # # self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
+        # # self.add_input("q", src_indices=np.arange(s1, s2, dtype=int), shape=local_state_size)
+
+        # # import ipdb; ipdb.set_trace()
+        
+        
+        
+        if self.options['mesh']:
+            self.add_input("val_nonuniq", val=coords.flatten() )
+            self.add_output("val_uniq", val=coords_uniq.flatten() )
+        else:
+            self.add_input("val_nonuniq", shape=coords.shape[0] )
+            self.add_output("val_uniq", shape=coords_uniq.shape[0] )
+
+    def compute(self, inputs, outputs):
+        if self.options['mesh']:
+            coords = inputs["val_nonuniq"].reshape((-1,3))
+            coords_uniq = coords[self.mapping]
+            outputs["val_uniq"] = coords_uniq
+        else:
+            outputs["val_uniq"] = inputs["val_nonuniq"][self.mapping]
 
 
 class Geo_Disp(ExplicitComponent):
@@ -468,16 +600,25 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         # finally, we generally want to avoid extra calls here
         # because this routine can be call multiple times back to back in a LBGS self.solver.
         if not self.solver.adjointSetup:
+            
+            time_start = time()
+            print(f'setting up adjoint')
             self.solver._setupAdjoint()
-
+            time_setup = time() - time_start
+            print(f'adjoint setup took: {time_setup}')
 
         
+        print(f'solving adjoint')
+        time_start = time()
         if mode == "fwd":
             d_outputs["q"] += self.solver.solveDirectForRHS(d_residuals["q"])
         elif mode == "rev":
             RHS = copy.deepcopy(d_outputs["q"])
             self.solver.adflow.adjointapi.solveadjoint(RHS, d_residuals["q"], True)
 
+        time_solve = time() - time_start
+        print(f'adjoint solve took: {time_solve}')
+        
         return True, 0, 0
 
 
@@ -768,10 +909,8 @@ class AdflowGroup(SharedObjGroup):
         # if you wanted to check that the user gave a valid combination of components (solver, mesh, ect)
         # you could do that here, but they will be shown on the n2
 
-        print("=========")
         for comp_name, comp in self.group_components.items():
             if self.group_options[comp_name]:
-                print(comp_name)
                 if comp_name in ["mesh", "geo_disp", "deformer"]:
                     comp = self.group_components[comp_name]()
                 elif comp_name == "solver":

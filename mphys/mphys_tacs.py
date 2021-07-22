@@ -1,6 +1,6 @@
 from __future__ import division, print_function
 import numpy as np
-
+import time
 import openmdao.api as om
 
 from .base_classes import SolverObjectBasedSystem
@@ -91,7 +91,6 @@ class TacsMesh(om.ExplicitComponent):
         xpts_arr = self.xpts.getArray()
         # node_size  =     xpts_arr.size
         self.add_output('x_s0', val=xpts_arr.flatten(), desc='node coordinates')
-
         if self.options['surface_mapping'] is not None:
             self.surface_mapping = self.options['surface_mapping'](xpts_arr)
         else:
@@ -296,12 +295,7 @@ class TacsSolver(om.ImplicitComponent):
             self.add_input('dv_struct', shape=self.ndv, desc='tacs design variables')
 
         # outputs
-        self.add_output('u', shape=state_size, desc='state vector, e.g. displacements for temperatures')
-
-
-
-
-
+        self.add_output('u', shape=state_size, desc='state vector, e.g. displacements or temperatures')
 
     def _need_update(self,inputs):
 
@@ -334,9 +328,11 @@ class TacsSolver(om.ImplicitComponent):
             res_array = self.res.getArray()
             res_array[:] = 0.0
 
+            time_start =time.time()
             self.tacs.assembleJacobian(alpha,beta,gamma,self.res,self.mat)
             pc.factor()
-
+            time_end = time.time() - time_start
+            print(f'jacobian setup and factored in :{time_end}')
             return
 
         if self._need_update(inputs):
@@ -394,7 +390,6 @@ class TacsSolver(om.ImplicitComponent):
         tacs.applyBCs(res)
 
         residuals['u'][:] = res_array[:]
-        import ipdb; ipdb.set_trace()
 
     def solve_nonlinear(self, inputs, outputs):
         tacs   = self.tacs
@@ -442,7 +437,6 @@ class TacsSolver(om.ImplicitComponent):
         # Set the updated state variables into the self.tacs object
         self.tacs.setBCs(ans)
         self.tacs.setVariables(ans)
-
 
         ans_array = ans.getArray()
         outputs['u'] = ans_array[:]
@@ -570,14 +564,7 @@ class TacsSolver(om.ImplicitComponent):
 
 class TacsWriteSolution(om.ExplicitComponent):
     """
-    Component to perform TACS steady analysis
-
-    Assumptions:
-        - User will provide a tacs_solver_setup function that gives some pieces
-          required for the tacs solver
-          => tacs, mat, pc, gmres, struct_ndv = tacs_solver_setup(comm)
-        - The TACS steady residual is R = K * u_s - f_s = 0
-
+    Component to write tacs output
     """
     def initialize(self):
         self.options['distributed'] = True
@@ -733,9 +720,6 @@ class TacsWriteSolution(om.ExplicitComponent):
 
         self.options['f5_writer'](self.options["obj_builders"][TacsObjsBuilder].TACS, self.tacs, self.count)
         self.count += 1
-            
-
-
 
 class TacsFunctions(om.ExplicitComponent):
     """
@@ -746,45 +730,26 @@ class TacsFunctions(om.ExplicitComponent):
           => func_list, tacs, struct_ndv = tacs_func_setup(comm)
     """
     def initialize(self):
-        # self.options.declare('struct_solver')
-        self.options.declare('check_partials', default=False)
-        self.options.declare('solver_options')
-        self.objBuilders = [TacsObjsBuilder()]
+
 
         self.options['distributed'] = True
 
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
-
+        self.options.declare("obj_builders", default={TacsObjsBuilder: None}, recordable=False)
+        
+        self.options.declare("get_funcs", recordable=False)
+        self.options.declare("elem_dv", default= False)
 
     def setup(self):
-        self.check_partials = self.options['check_partials']
-
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
+        tacs_objs =  self.options["obj_builders"][TacsObjsBuilder].get_obj(self.comm)
 
         # TACS assembler setup
-        self.mesh      = self.objBuilders[0].obj.mesh
-        self.tacs      = self.objBuilders[0].obj.assembler
+        self.tacs      = tacs_objs.assembler
+        self.mesh      = tacs_objs.mesh
 
         self.ndv = ndv = self.mesh.getNumComponents()
 
 
-        get_funcs = self.options['solver_options']['get_funcs']
-
-
-        if 'f5_writer' in  self.options['solver_options']:
-            self.f5_writer = self.options['solver_options']['f5_writer']
-        else:
-            self.f5_writer = None
-
-
-
+        get_funcs = self.options['get_funcs']
 
         # TACS assembler setup
         self.func_list = get_funcs(self.tacs)
@@ -806,19 +771,20 @@ class TacsFunctions(om.ExplicitComponent):
         n2 = np.sum(n_list[:irank+1])
 
         # OpenMDAO part of setup
-        # TODO move the dv_struct to an external call where we add the DVs
-        self.add_input('dv_struct', shape=ndv,                                                    desc='tacs design variables')
+        if self.options['elem_dv']:
+            self.add_input('dv_struct', shape=self.ndv, desc='tacs design variables')
+
         self.add_input('x_s0',      shape=node_size,  src_indices=np.arange(n1, n2, dtype=int),   desc='structural node coordinates')
-        self.add_input('u_s',       shape=state_size, src_indices=np.arange(s1, s2, dtype=int),   desc='structural state vector')
+        self.add_input('u',       shape=state_size, src_indices=np.arange(s1, s2, dtype=int),   desc='structural state vector')
 
         # Remove the mass function from the func list if it is there
         # since it is not dependent on the structural state
-        func_no_mass = []
-        for i,func in enumerate(self.func_list):
-            if not isinstance(func,functions.StructuralMass):
-                func_no_mass.append(func)
+        # func_no_mass = []?
+        # for i,func in enumerate(self.func_list):
+        #     if not isinstance(func,functions.StructuralMass):
+        #         func_no_mass.append(func)
 
-        self.func_list = func_no_mass
+        # self.func_list = func_no_mass
         if len(self.func_list) > 0:
             self.add_output('f_struct', shape=len(self.func_list), desc='structural function values')
 
@@ -859,18 +825,16 @@ class TacsFunctions(om.ExplicitComponent):
         self.tacs.applyBCs(ans)
 
         self.tacs.setVariables(ans)
+        
 
     def compute(self,inputs,outputs):
-        if self.check_partials:
-            self._update_internal(inputs)
+        # if self.check_partials:
+        #     self._update_internal(inputs)
 
-        if 'f_struct' in outputs:
-            print('f_struct',outputs['f_struct'])
-            outputs['f_struct'] = self.tacs.evalFunctions(self.func_list)
-
-        if self.f5_writer is not None:
-            self.f5_writer(self.tacs)
-
+        outputs['f_struct'] = self.tacs.evalFunctions(self.func_list)
+        
+        print('== tacs functions == ', outputs['f_struct'])
+        
     def compute_jacvec_product(self,inputs, d_inputs, d_outputs, mode):
         if mode == 'fwd':
             if self.check_partials:
@@ -878,8 +842,8 @@ class TacsFunctions(om.ExplicitComponent):
             else:
                 raise ValueError('forward mode requested but not implemented')
         if mode == 'rev':
-            if self.check_partials:
-                self._update_internal(inputs)
+            # if self.check_partials:
+            #     self._update_internal(inputs)
 
             if 'f_struct' in d_outputs:
                 for ifunc, func in enumerate(self.func_list):
@@ -903,6 +867,7 @@ class TacsFunctions(om.ExplicitComponent):
                         prod_array = prod.getArray()
 
                         d_inputs['u_s'][:] += np.array(prod_array,dtype=float) * d_outputs['f_struct'][ifunc]
+
 
 class TacsMass(om.ExplicitComponent):
     """

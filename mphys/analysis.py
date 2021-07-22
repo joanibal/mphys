@@ -39,15 +39,12 @@ class SharedObjGroup(Group):
             else:  # the subsys is a component
                 if "obj_builders" in subsys.options:
 
-                    print("adding builder", self.options["shared_obj_builders"], "to ", subsys.name)
-
                     for bldr_type, bldr_inst in self.options["shared_obj_builders"].items():
                         for subsys_bldr_type, subsys_bldr_inst in subsys.options["obj_builders"].items():
                             # print(subsys_bldr_type, bldr_type)
 
                             if issubclass(subsys_bldr_type, bldr_type) and bldr_inst is not None:
                                 # pass the builder to the subsystem
-                                print("passing", bldr_inst)
                                 subsys.options["obj_builders"][subsys_bldr_type] = bldr_inst
 
 

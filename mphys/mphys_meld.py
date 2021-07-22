@@ -91,21 +91,25 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
 
     def compute(self, inputs, outputs):
 
-        x_cond0 = np.array(inputs['x_cond0'],dtype=self.meld_dtype)
-        x_conv0 = np.array(inputs['x_conv0'],dtype=self.meld_dtype)
-
-        temp_conv  = np.array(outputs['temp_conv'],dtype=self.meld_dtype)
-        temp_cond  = np.array(inputs['temp_cond'],dtype=self.meld_dtype)
 
 
-        self.meldThermal.setStructNodes(x_cond0)
-        self.meldThermal.setAeroNodes(x_conv0)
+
 
         if not self.initialized_meld:
+            x_cond0 = np.array(inputs['x_cond0'],dtype=self.meld_dtype)
+            x_conv0 = np.array(inputs['x_conv0'],dtype=self.meld_dtype)
+
+            self.meldThermal.setStructNodes(x_cond0)
+            self.meldThermal.setAeroNodes(x_conv0)
+
             self.meldThermal.initialize()
             self.initialized_meld = True
-
-
+            print('-------------------------------------------------------')
+            print('num x_cond', x_cond0.size//3, 'num x_conv', x_conv0.size//3)
+            print('-------------------------------------------------------')
+ 
+        temp_conv  = np.array(outputs['temp_conv'],dtype=self.meld_dtype)
+        temp_cond  = np.array(inputs['temp_cond'],dtype=self.meld_dtype)
         self.meldThermal.transferTemp(temp_cond,temp_conv)
         outputs['temp_conv'] = temp_conv
 
@@ -203,35 +207,47 @@ class MELDThermal_heatflux_xfer(om.ExplicitComponent):
         self.add_input('x_conv0', shape_by_conn=True, desc='initial aerodynamic surface node coordinates')
 
         self.add_input('heatflux_conv', shape_by_conn=True, desc='initial conv heat transfer rate')
-        self.add_output('heatflux_cond', shape_by_conn=True , desc='heat transfer rate on the conduction mesh at the interface')
+        self.add_output('heatflux_cond', shape_by_conn=True , val=-1, desc='heat transfer rate on the conduction mesh at the interface')
 
         # outputs
 
 
     def compute(self, inputs, outputs):
 
-        heatflux_conv =  np.array(inputs['heatflux_conv'],dtype=self.meld_dtype)
-        heatflux_cond =  np.array(outputs['heatflux_cond'],dtype=self.meld_dtype)
-
-
-        x_cond0 = np.array(inputs['x_cond0'],dtype=self.meld_dtype)
-        x_conv0 = np.array(inputs['x_conv0'],dtype=self.meld_dtype)
-
-        self.meldThermal.setStructNodes(x_cond0)
-        self.meldThermal.setAeroNodes(x_conv0)
-
         if not self.initialized_meld:
+            x_cond0 = np.array(inputs['x_cond0'],dtype=self.meld_dtype)
+            x_conv0 = np.array(inputs['x_conv0'],dtype=self.meld_dtype)
+
+            self.meldThermal.setStructNodes(x_cond0)
+            self.meldThermal.setAeroNodes(x_conv0)
+
             self.meldThermal.initialize()
             self.initialized_meld = True
 
+        heatflux_conv =  np.array(inputs['heatflux_conv'],dtype=self.meld_dtype)
+        heatflux_cond =  np.array(outputs['heatflux_cond'],dtype=self.meld_dtype)
+
         self.meldThermal.transferFlux(heatflux_conv,heatflux_cond)
         outputs['heatflux_cond'] = heatflux_cond
+        
+        # if heatflux_conv.size:
+        #     print('-------------------------------------------------------------------')
+        #     print('heatflux in', np.max(heatflux_conv), np.min(heatflux_conv), np.mean(heatflux_conv))
+        #     print('-------------------------------------------------------------------')
+                    
+        #     x_conv0 = x_conv0.reshape((-1, 3))
+        #     for i in range(len(heatflux_conv)):
+        #         print(i, heatflux_conv[i], x_conv0[i])
         # print('-------------------------------------------------------------------')
         # print('sum heat in ', np.sum(heatflux_conv), 'out', np.sum(heatflux_cond))
+        # print('heatflux out', np.max(heatflux_cond), np.min(heatflux_cond), np.mean(heatflux_cond))
         # print('-------------------------------------------------------------------')
-        # print('heatflux out', heatflux_cond)
-        # import ipdb; ipdb.set_trace()
-
+        
+        
+        # x_cond0 = x_cond0.reshape((-1, 3))
+        # for i in range(len(heatflux_cond)):
+        #     print(i, heatflux_cond[i], x_cond0[i])
+        
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
         """

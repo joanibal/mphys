@@ -198,7 +198,13 @@ class DVGeoComp(om.ExplicitComponent):
             pts = pts.reshape(pts.size//3, 3)
             
             self.DVGeo.addPointSet(pts, 'pt_set', eps=1e-10, recompute=False)
-
+            #HACK: 
+            if self.name == 'dvgeo_cond':    
+                # for i in np.arange(pts.shape[0]):
+                    # if not i in self.DVGeo.children[0].FFD.embededVolumes['pt_set'].mask:
+                        # print(i, self.DVGeo.children[0].FFD.embededVolumes['pt_set'].v[i])
+                self.DVGeo.children[0].FFD.embededVolumes['pt_set'].mask = range(pts.shape[0])
+ 
             
             if MPI.COMM_WORLD.rank == 0:
                 
