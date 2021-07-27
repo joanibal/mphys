@@ -79,10 +79,9 @@ class AeroProblemMixIns:
         ap : AeroProblem
             The same problem, but with the BCVar added as a design variabl
         """
-        bc_data = CFDSolver.getBCData()
+        bc_data = CFDSolver.getBCData([famGroup])
         ap.setBCVar(BCVar, bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup), famGroup)
         ap.addDV(BCVar, familyGroup=famGroup, name=(BCVar + "_" + famGroup))
-
 
         return ap
 
@@ -159,7 +158,6 @@ class AdflowMesh(ExplicitComponent):
         for famGroup in self.options["family_groups"]:
             coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order="C")
             self.add_output("X_%s" % (famGroup), val=coords, desc="surface points for %s" % (famGroup))
-
             if self.options["triangulated_mesh"]:
                 tri_pts = self.solver.getTriangulatedMeshSurface(groupName=famGroup)
 
@@ -219,16 +217,17 @@ class AdflowMapper(ExplicitComponent):
         in_var_name = "X_%s" % (in_famGroup)
 
         if mode == "fwd":
-            in_vec = d_inputs[in_var_name]
-            in_vec = in_vec.reshape(in_vec.size // 3, 3)
+            if in_var_name in d_inputs:
+                in_vec = d_inputs[in_var_name]
+                in_vec = in_vec.reshape(in_vec.size // 3, 3)
 
-            for out_famGroup in self.options["output_family_groups"]:
-                if "X_%s" % (out_famGroup) in d_outputs:
-                    out_vec = d_outputs["X_%s" % (out_famGroup)]
-                    out_vec = out_vec.reshape(out_vec.size // 3, 3)
-                    out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
+                for out_famGroup in self.options["output_family_groups"]:
+                    if "X_%s" % (out_famGroup) in d_outputs:
+                        out_vec = d_outputs["X_%s" % (out_famGroup)]
+                        out_vec = out_vec.reshape(out_vec.size // 3, 3)
+                        out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
 
-                    d_outputs["X_%s" % (out_famGroup)] += out_vec.flatten(order="C")
+                        d_outputs["X_%s" % (out_famGroup)] += out_vec.flatten(order="C")
 
         elif mode == "rev":
             if in_var_name in d_inputs:
@@ -696,7 +695,7 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
         if self.options["heatxfer"]:
             local_nodes, nCells = self.solver._getSurfaceSize(self.solver.allIsothermalWallsGroup)
 
-            self.add_output("heatflux", val=np.ones(local_nodes) * 0, shape=local_nodes, units="W/m**2")
+            self.add_output("heatflux", val=np.ones(local_nodes) * 0, shape=local_nodes)
 
 
     def _get_func_name(self, name):

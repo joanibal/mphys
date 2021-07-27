@@ -132,8 +132,9 @@ class TacsSurfaceToVolume(om.ExplicitComponent):
 
     def compute_jacvec_product(self,inputs, d_inputs, d_outputs, mode):
         if mode == 'fwd':
-            d_outputs['volume_val'] = 0
-            d_outputs['volume_val'][self.surface_mapping] = d_inputs['surface_val']
+            if 'surface_val' in d_inputs:
+                d_outputs['volume_val'] = 0
+                d_outputs['volume_val'][self.surface_mapping] = d_inputs['surface_val']
 
         if mode == 'rev':
             if 'surface_val' in d_inputs:
@@ -192,11 +193,13 @@ class TacsVolumeToSurface(om.ExplicitComponent):
         if mode == 'fwd':
             if self.options['mesh']:
 
-                xpts_arr = d_inputs['volume_val'].reshape((-1, 3))
-                xpts_arr = xpts_arr[self.surface_mapping]
-                d_outputs['surface_val']  = xpts_arr.flatten(order="C")
+                if 'volume_val' in d_inputs:
+                    xpts_arr = d_inputs['volume_val'].reshape((-1, 3))
+                    xpts_arr = xpts_arr[self.surface_mapping]
+                    d_outputs['surface_val']  = xpts_arr.flatten(order="C")
             else:
-                d_outputs['surface_val'] = d_inputs['volume_val'][self.surface_mapping]
+                if 'volume_val' in d_inputs:
+                    d_outputs['surface_val'] = d_inputs['volume_val'][self.surface_mapping]
 
         if mode == 'rev':
 

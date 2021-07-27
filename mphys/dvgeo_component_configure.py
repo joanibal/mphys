@@ -101,7 +101,7 @@ class DVGeoComp(om.ExplicitComponent):
         getDVGeo = self.options['setup_dvgeo']
         self.DVGeo = getDVGeo(ffd_files)
         self.add_input('pts', shape_by_conn=True)
-    
+        
         # iterate over the design variables for this comp
         
         dvs = self.DVGeo.getValues()
@@ -191,7 +191,6 @@ class DVGeoComp(om.ExplicitComponent):
 
     def compute(self, inputs, outputs):
         self.DVGeo.setDesignVars(inputs)
-
         if not self.initialized:
             self.initialized = True
             pts = inputs['pts']
