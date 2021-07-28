@@ -273,7 +273,7 @@ class DVGeoComp(om.ExplicitComponent):
 
                 xdot = self.DVGeo.totalSensitivity(dout, ptSetName, comm=self.comm) # this has a all reduce inside
                 # loop over dvs and accumulate
-                
+                print(self.name,'dvgeo sens', ptSetName)
                 for k in xdot:
                     # check if this dv is present
                     if k in d_inputs:
@@ -285,13 +285,16 @@ class DVGeoComp(om.ExplicitComponent):
                     self.funcsSens = {}
                     self.DVCon.evalFunctionsSens(self.funcsSens, includeLinear=True)
                     self.update_jac = False
-
+                    
 
                 for constraintname in self.funcsSens:
                     for dvname in self.funcsSens[constraintname]:
                         if dvname in d_inputs:
-                            dcdx = self.funcsSens[constraintname][dvname]
-                            # if self.comm.rank == 0:
                             dout = d_outputs[constraintname]
-                            jvtmp = np.dot(np.transpose(dcdx),dout)
-                            d_inputs[dvname] += jvtmp
+                            
+                            if np.sum(dout) != 0.0: # most will be zero
+                                dcdx = self.funcsSens[constraintname][dvname]
+                                if self.comm.rank == 0:
+                                    print('doing',constraintname, dvname ,np.sum(dout))
+                                jvtmp = np.dot(np.transpose(dcdx),dout)
+                                d_inputs[dvname] += jvtmp

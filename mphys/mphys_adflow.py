@@ -80,7 +80,14 @@ class AeroProblemMixIns:
             The same problem, but with the BCVar added as a design variabl
         """
         bc_data = CFDSolver.getBCData([famGroup])
-        ap.setBCVar(BCVar, bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup), famGroup)
+        bc_arr = bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup)
+
+        # from mpi4py import MPI 
+        # if MPI.COMM_WORLD.rank == 30:
+        #     print(bc_data)
+        #     print(bc_arr.shape)
+
+        ap.setBCVar(BCVar, bc_arr, famGroup)
         ap.addDV(BCVar, familyGroup=famGroup, name=(BCVar + "_" + famGroup))
 
         return ap
@@ -113,9 +120,14 @@ class AeroProblemMixIns:
             s_list = self.comm.allgather(size)
             s1 = np.sum(s_list[:irank])
             s2 = np.sum(s_list[: irank + 1])
-
-            self.add_input(name, val=val, src_indices=np.arange(s1, s2, dtype=int), units=kwargs["units"])
-            # if self.comm.rank == 0:
+            src_ind = np.arange(s1, s2, dtype=int)
+            
+            # from mpi4py import MPI 
+            # if MPI.COMM_WORLD.rank == 0:
+            #     print(s_list)
+            #     print(np.sum(s_list))
+                    
+            self.add_input(name, val=val, src_indices=src_ind, units=kwargs["units"])
 
     def add_ap_outputs(self, ap, units=None):
         # this is the external function to set the ap to this component
