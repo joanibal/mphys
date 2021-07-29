@@ -252,7 +252,6 @@ class DVGeoComp(om.ExplicitComponent):
 
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
-
         # only do the computations when we have more than zero entries in d_inputs in the reverse mode
         ni = len(list(d_inputs.keys()))
 
@@ -260,16 +259,16 @@ class DVGeoComp(om.ExplicitComponent):
         if mode == 'rev' and ni > 0:
             # for ptSetName in self.DVGeo.ptSetNames:
             ptSetName = 'pt_set'
-            dout = d_outputs['deformed_pts'].reshape(len(d_outputs['deformed_pts'])//3, 3)
             
             # only do the calc. if d_output is not zero on ANY proc
-            local_all_zeros = np.all(dout == 0)
+            local_all_zeros = np.all( d_outputs['deformed_pts'] == 0)
             global_all_zeros = np.zeros(1, dtype=bool)
+            
             # we need to communicate for this check otherwise we may hang
             self.comm.Allreduce([local_all_zeros, MPI.BOOL], [global_all_zeros, MPI.BOOL], MPI.LAND)
-
             # global_all_zeros is a numpy array of size 1
             if not global_all_zeros[0]:
+                dout = d_outputs['deformed_pts'].reshape(len(d_outputs['deformed_pts'])//3, 3)
 
                 xdot = self.DVGeo.totalSensitivity(dout, ptSetName, comm=self.comm) # this has a all reduce inside
                 # loop over dvs and accumulate
@@ -282,19 +281,16 @@ class DVGeoComp(om.ExplicitComponent):
             if self.options['setup_dvcon']:
 
                 if self.update_jac:
-                    self.funcsSens = {}
-                    self.DVCon.evalFunctionsSens(self.funcsSens, includeLinear=True)
+                    self.funcsSensTrans = {}
+                    self.DVCon.evalFunctionsSens(self.funcsSensTrans, includeLinear=True)
                     self.update_jac = False
-                    
 
-                for constraintname in self.funcsSens:
-                    for dvname in self.funcsSens[constraintname]:
-                        if dvname in d_inputs:
-                            dout = d_outputs[constraintname]
+                    for constraintname in self.funcsSensTrans:
+                        for dvname in self.funcsSensTrans[constraintname]:                    
                             
-                            if np.sum(dout) != 0.0: # most will be zero
-                                dcdx = self.funcsSens[constraintname][dvname]
-                                if self.comm.rank == 0:
-                                    print('doing',constraintname, dvname ,np.sum(dout))
-                                jvtmp = np.dot(np.transpose(dcdx),dout)
-                                d_inputs[dvname] += jvtmp
+                            self.funcsSensTrans[constraintname][dvname] = np.transpose(self.funcsSensTrans[constraintname][dvname])
+
+                for constraintname in self.funcsSensTrans:
+                    for dvname in self.funcsSensTrans[constraintname]:
+                        if dvname in d_inputs:
+                                d_inputs[dvname] +=  np.dot(self.funcsSensTrans[constraintname][dvname],d_outputs[constraintname])
