@@ -85,7 +85,7 @@ class DVGeoComp(om.ExplicitComponent):
         self.options.declare('output_dir', default='./')
         self.initialized = False
 
-        self.options['distributed'] = True
+        # self.options['distributed'] = True
 
         # function used to add all the design variables, etc.
         self.options.declare('setup_dvgeo',recordable=False)
@@ -100,7 +100,7 @@ class DVGeoComp(om.ExplicitComponent):
 
         getDVGeo = self.options['setup_dvgeo']
         self.DVGeo = getDVGeo(ffd_files)
-        self.add_input('pts', shape_by_conn=True)
+        self.add_input('pts', shape_by_conn=True,distributed=True)
         
         # iterate over the design variables for this comp
         
@@ -110,7 +110,7 @@ class DVGeoComp(om.ExplicitComponent):
             print('adding', key, val.size)
             self.add_input(key, src_indices=np.arange(val.size), val=val.real)
         
-        self.add_output('deformed_pts', copy_shape='pts')
+        self.add_output('deformed_pts', copy_shape='pts', distributed=True)
 
         self.count = 0
         # --- Setup the constraints ---
@@ -184,9 +184,9 @@ class DVGeoComp(om.ExplicitComponent):
                     print(f'for conName {conName}, adding {con.name} with size {con.nCon}')
                     self.add_output(con.name, shape=con.nCon)
 
-            self.add_input('tri_surf_p0', shape_by_conn=True)
-            self.add_input('tri_surf_v1', shape_by_conn=True)
-            self.add_input('tri_surf_v2', shape_by_conn=True)
+            self.add_input('tri_surf_p0', shape_by_conn=True, distributed=True)
+            self.add_input('tri_surf_v1', shape_by_conn=True, distributed=True)
+            self.add_input('tri_surf_v2', shape_by_conn=True, distributed=True)
 
 
     def compute(self, inputs, outputs):
