@@ -335,7 +335,8 @@ class TacsSolver(om.ImplicitComponent):
             self.tacs.assembleJacobian(alpha,beta,gamma,self.res,self.mat)
             pc.factor()
             time_end = time.time() - time_start
-            print(f'jacobian setup and factored in :{time_end}')
+            if self.comm.rank == 0:
+                print(f'jacobian setup and factored in :{time_end}')
             return
 
         if self._need_update(inputs):
