@@ -35,17 +35,17 @@ class AdflowObjBuilder(ObjBuilder):
             else:
                 mesh = USMesh(options=self.options["idwarp"], comm=comm)
                 CFDSolver = ADFLOW(options=self.options["adflow"], comm=comm)
-                
+
             if self.func:
                 self.func(CFDSolver)
-            
+
             CFDSolver.setMesh(mesh)
             self.solver = CFDSolver
 
             self.obj_built = True
 
-
         return self.solver
+
 
 class AeroProblemMixIns:
     """
@@ -53,7 +53,7 @@ class AeroProblemMixIns:
     aeroproblems
     """
 
-    def set_ap_design_vars(self, ap,  inputs):
+    def set_ap_design_vars(self, ap, inputs):
 
         ap_vars, _ = get_dvs_and_cons(ap=ap)
         tmp = {}
@@ -64,7 +64,7 @@ class AeroProblemMixIns:
 
         ap.setDesignVars(tmp)
 
-    def add_BCVars_to_ap(self,CFDSolver, ap, BCVar, famGroup):
+    def add_BCVars_to_ap(self, CFDSolver, ap, BCVar, famGroup):
         """
         adds any BCData from the CFDSolver to the aeroproblem
 
@@ -81,11 +81,6 @@ class AeroProblemMixIns:
         """
         bc_data = CFDSolver.getBCData([famGroup])
         bc_arr = bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup)
-
-        # from mpi4py import MPI 
-        # if MPI.COMM_WORLD.rank == 30:
-        #     print(bc_data)
-        #     print(bc_arr.shape)
 
         ap.setBCVar(BCVar, bc_arr, famGroup)
         ap.addDV(BCVar, familyGroup=famGroup, name=(BCVar + "_" + famGroup))
@@ -121,12 +116,12 @@ class AeroProblemMixIns:
             s1 = np.sum(s_list[:irank])
             s2 = np.sum(s_list[: irank + 1])
             src_ind = np.arange(s1, s2, dtype=int)
-            
-            # from mpi4py import MPI 
+
+            # from mpi4py import MPI
             # if MPI.COMM_WORLD.rank == 0:
             #     print(s_list)
             #     print(np.sum(s_list))
-                    
+
             self.add_input(name, val=val, src_indices=src_ind, units=kwargs["units"])
 
     def add_ap_outputs(self, ap, units=None):
@@ -145,7 +140,6 @@ class AeroProblemMixIns:
             else:
                 self.add_output(f_name, shape=1)
             # self.add_output(f_name, shape=1, units=units)
-
 
 
 class AdflowMesh(ExplicitComponent):
@@ -173,9 +167,10 @@ class AdflowMesh(ExplicitComponent):
             if self.options["triangulated_mesh"]:
                 tri_pts = self.solver.getTriangulatedMeshSurface(groupName=famGroup)
 
-                self.add_output(f'X_{famGroup}_p0', val=tri_pts[0], desc="surface points for %s" % (famGroup))
-                self.add_output(f'X_{famGroup}_v1', val=tri_pts[1], desc="surface points for %s" % (famGroup))
-                self.add_output(f'X_{famGroup}_v2', val=tri_pts[2], desc="surface points for %s" % (famGroup))
+                self.add_output(f"X_{famGroup}_p0", val=tri_pts[0], desc="surface points for %s" % (famGroup))
+                self.add_output(f"X_{famGroup}_v1", val=tri_pts[1], desc="surface points for %s" % (famGroup))
+                self.add_output(f"X_{famGroup}_v2", val=tri_pts[2], desc="surface points for %s" % (famGroup))
+
 
 class AdflowMapper(ExplicitComponent):
     """
@@ -215,13 +210,12 @@ class AdflowMapper(ExplicitComponent):
             out_vec = outputs["X_%s" % (out_famGroup)]
             out_vec = out_vec.reshape(out_vec.size // 3, 3)
 
-            if self.solver.dtype == 'D' and not self.under_complex_step:
+            if self.solver.dtype == "D" and not self.under_complex_step:
                 in_vec = np.array(in_vec, dtype=self.solver.dtype)
                 out_vec = np.array(out_vec, dtype=self.solver.dtype)
-            
+
             out_vec = self.solver.mapVector(in_vec, in_famGroup, out_famGroup, out_vec)
             outputs["X_%s" % (out_famGroup)] = out_vec.flatten(order="C")
-
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
 
@@ -250,11 +244,12 @@ class AdflowMapper(ExplicitComponent):
 
                         in_vec = np.zeros(d_inputs["X_%s" % (in_famGroup)].shape)
                         in_vec = in_vec.reshape(in_vec.size // 3, 3)
-                        
+
                         # reverse the mapping!
                         self.solver.mapVector(out_vec, out_famGroup, in_famGroup, in_vec)
 
                         d_inputs[in_var_name] += in_vec.flatten(order="C")
+
 
 class AdflowNonUniqueMapper(ExplicitComponent):
     """
@@ -268,7 +263,7 @@ class AdflowNonUniqueMapper(ExplicitComponent):
         # self.options.declare("output_family_groups", default=["allWalls"])
 
         self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
-        self.options.declare("mesh", default= False)
+        self.options.declare("mesh", default=False)
         self.options["distributed"] = True
         self.options.declare("family_group", default=["allWalls"])
 
@@ -276,44 +271,35 @@ class AdflowNonUniqueMapper(ExplicitComponent):
 
         self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
 
-        
-
         fam_group = self.options["family_group"]
         coords = self.solver.getSurfaceCoordinates(groupName=fam_group).flatten(order="C")
-        coords = coords.reshape((-1,3))
-        
-        
-        
+        coords = coords.reshape((-1, 3))
+
         # Run the pointReduce on the CGNS nodes
         coords_uniq, linkTmp, nUnique = self.solver.adflow.utils.pointreduce(coords.T, 1e-12)
         coords_uniq = coords_uniq.T[:nUnique]
-    
+
         linkTmp -= 1
-        
+
         self.mapping = linkTmp
-            
-        
-        
-        
-        
-        if self.options['mesh']:
-            self.add_input("val_uniq", val=coords_uniq.flatten() )
-            self.add_output("val_nonuniq", val=coords.flatten() )
+
+        if self.options["mesh"]:
+            self.add_input("val_uniq", val=coords_uniq.flatten())
+            self.add_output("val_nonuniq", val=coords.flatten())
         else:
-            # import ipdb; ipdb.set_trace()
-            self.add_input("val_uniq", shape=coords_uniq.shape[0] )
-            self.add_output("val_nonuniq", shape=coords.shape[0] )
+            self.add_input("val_uniq", shape=coords_uniq.shape[0])
+            self.add_output("val_nonuniq", shape=coords.shape[0])
 
     def compute(self, inputs, outputs):
-        if self.options['mesh']:
-            coords_uniq = inputs["val_uniq"].reshape((-1,3))
+        if self.options["mesh"]:
+            coords_uniq = inputs["val_uniq"].reshape((-1, 3))
             coords = coords_uniq[self.mapping]
             outputs["val_nonuniq"] = coords.flatten()
         else:
             outputs["val_nonuniq"] = inputs["val_uniq"][self.mapping]
             # print(outputs["val_nonuniq"])
-            
-            
+
+
 class AdflowUniqueMapper(ExplicitComponent):
     """
     Component to get the quantities for each unique node
@@ -326,7 +312,7 @@ class AdflowUniqueMapper(ExplicitComponent):
         # self.options.declare("output_family_groups", default=["allWalls"])
 
         self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
-        self.options.declare("mesh", default= False)
+        self.options.declare("mesh", default=False)
         self.options["distributed"] = True
         self.options.declare("family_group", default=["allWalls"])
 
@@ -334,31 +320,29 @@ class AdflowUniqueMapper(ExplicitComponent):
 
         self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
 
-        
-
         fam_group = self.options["family_group"]
         coords = self.solver.getSurfaceCoordinates(groupName=fam_group).flatten(order="C")
-        coords = coords.reshape((-1,3))
-        
+        coords = coords.reshape((-1, 3))
+
         # Run the pointReduce on the CGNS nodes
         coords_uniq, linkTmp, nUnique = self.solver.adflow.utils.pointreduce(coords.T, 1e-12)
         coords_uniq = coords_uniq.T[:nUnique]
-    
+
         linkTmp -= 1
-        
+
         def get_unique_mask(link):
             mask = np.zeros(link.size, dtype=bool)
-            idx_unique = np.ones((np.max(link)+1), dtype=bool)
-            
+            idx_unique = np.ones((np.max(link) + 1), dtype=bool)
+
             for idx, l in enumerate(link):
                 if idx_unique[l]:
                     mask[idx] = True
-                    idx_unique[l] = False 
-            
-            return mask 
-        
+                    idx_unique[l] = False
+
+            return mask
+
         self.mapping = get_unique_mask(linkTmp)
-            
+
         # local_coord_size = coords.size
         # n_list = self.comm.allgather(local_coord_size)
         # irank = self.comm.rank
@@ -369,20 +353,16 @@ class AdflowUniqueMapper(ExplicitComponent):
         # # self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
         # # self.add_input("q", src_indices=np.arange(s1, s2, dtype=int), shape=local_state_size)
 
-        # # import ipdb; ipdb.set_trace()
-        
-        
-        
-        if self.options['mesh']:
-            self.add_input("val_nonuniq", val=coords.flatten() )
-            self.add_output("val_uniq", val=coords_uniq.flatten() )
+        if self.options["mesh"]:
+            self.add_input("val_nonuniq", val=coords.flatten())
+            self.add_output("val_uniq", val=coords_uniq.flatten())
         else:
-            self.add_input("val_nonuniq", shape=coords.shape[0] )
-            self.add_output("val_uniq", shape=coords_uniq.shape[0] )
+            self.add_input("val_nonuniq", shape=coords.shape[0])
+            self.add_output("val_uniq", shape=coords_uniq.shape[0])
 
     def compute(self, inputs, outputs):
-        if self.options['mesh']:
-            coords = inputs["val_nonuniq"].reshape((-1,3))
+        if self.options["mesh"]:
+            coords = inputs["val_nonuniq"].reshape((-1, 3))
             coords_uniq = coords[self.mapping]
             outputs["val_uniq"] = coords_uniq
         else:
@@ -554,9 +534,9 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
             self.solver.getResidual(self.ap)
 
     def apply_linear(self, inputs, outputs, d_inputs, d_outputs, d_residuals, mode):
-        
+
         self.linearize(inputs, outputs, None)
-        
+
         if mode == "fwd":
             if "q" in d_residuals:
                 xDvDot = {}
@@ -583,7 +563,7 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
                 wBar, xVBar, xDVBar = self.solver.computeJacobianVectorProductBwd(
                     resBar=resBar, wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True
                 )
-                
+
                 if "q" in d_outputs:
                     d_outputs["q"] += wBar
 
@@ -595,7 +575,7 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
                         d_inputs[dv_name] += dv_bar.flatten()
 
     def solve_linear(self, d_outputs, d_residuals, mode):
-        
+
         # check if we changed APs, then we have to do a bunch of updates
         if self.ap != self.solver.curAP:
             # AP is changed, so we have to update the AP and
@@ -611,15 +591,14 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         # finally, we generally want to avoid extra calls here
         # because this routine can be call multiple times back to back in a LBGS self.solver.
         if not self.solver.adjointSetup:
-            
+
             time_start = time()
-            print(f'setting up adjoint')
+            print(f"setting up adjoint")
             self.solver._setupAdjoint()
             time_setup = time() - time_start
-            print(f'adjoint setup took: {time_setup}')
+            print(f"adjoint setup took: {time_setup}")
 
-        
-        print(f'solving adjoint')
+        print(f"solving adjoint")
         time_start = time()
         if mode == "fwd":
             d_outputs["q"] += self.solver.solveDirectForRHS(d_residuals["q"])
@@ -628,8 +607,8 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
             self.solver.adflow.adjointapi.solveadjoint(RHS, d_residuals["q"], True)
 
         time_solve = time() - time_start
-        print(f'adjoint solve took: {time_solve}')
-        
+        print(f"adjoint solve took: {time_solve}")
+
         return True, 0, 0
 
 
@@ -637,7 +616,6 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
     def initialize(self):
         self.options.declare("aero_problem")
         self.options.declare("BCDesVar", default={})
-
 
         self.options.declare("forces", default=False)
         self.options.declare("heatxfer", default=False)
@@ -697,7 +675,6 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
         for BCVar, famGroup in self.options["BCDesVar"].items():
             self.add_BCVars_to_ap(self.solver, self.ap, BCVar, famGroup)
 
-
         self.add_ap_inputs(self.ap)
         self.add_ap_outputs(self.ap, self.func_to_units)
 
@@ -708,7 +685,6 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
             local_nodes, nCells = self.solver._getSurfaceSize(self.solver.allIsothermalWallsGroup)
 
             self.add_output("heatflux", val=np.ones(local_nodes) * 0, shape=local_nodes)
-
 
     def _get_func_name(self, name):
         return "%s_%s" % (self.ap.name, name.lower())
@@ -737,10 +713,8 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
         if self.options["heatxfer"]:
             outputs["heatflux"] = self.solver.getHeatXferRates().flatten(order="C")
 
-
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
         self.set_ap_design_vars(self.ap, inputs)
-
 
         # check if we changed APs, then we have to do a bunch of updates
         if self.ap != self.solver.curAP:
@@ -750,8 +724,6 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
             # which is automatically set in the getResidual call
             self.solver.getResidual(self.ap)
 
-
-        
         if mode == "fwd":
             xDvDot = {}
             for key in ap.DVs:
@@ -781,7 +753,7 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                 hftmp[:, 0] = hfdot
 
                 hfdot = self.solver.mapVector(hfdot, self.solver.allWallsGroup, self.solver.allIsothermalWallsGroup)
-                hfdot = hfdot[:,0]
+                hfdot = hfdot[:, 0]
                 d_outputs["heatflux"] += hfdot.flatten()
 
             for name in funcsdot:
@@ -798,7 +770,9 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                 # we have to check for 0 here, so we don't include any unnecessary variables in funcsBar
                 # becasue it causes Adflow to do extra work internally even if you give it extra variables, even if the seed is 0
                 if func_name in d_outputs and d_outputs[func_name] != 0.0:
-                    funcsBar[func_name] = d_outputs[func_name][0]/self.comm.size # tmp fix while om is changing distibuted vars
+                    funcsBar[func_name] = (
+                        d_outputs[func_name][0] / self.comm.size
+                    )  # tmp fix while om is changing distibuted vars
 
             if "f_a" in d_outputs:
                 fBar = d_outputs["f_a"]
@@ -817,7 +791,6 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
             else:
                 hfBar = None
 
-
             wBar, xVBar, xDVBar = self.solver.computeJacobianVectorProductBwd(
                 funcsBar=funcsBar, fBar=fBar, hfBar=hfBar, wDeriv=True, xVDeriv=True, xDvDeriv=False, xDvDerivAero=True
             )
@@ -832,15 +805,14 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                     d_inputs[dv_name] += dv_bar.flatten()
 
 
-
 class ADflowWriteSolution(ExplicitComponent, AeroProblemMixIns):
     """
     This componeent is used only for outputing a solution file for postprocessing
     """
+
     def initialize(self):
         self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
         self.options["distributed"] = True
-
 
     def setup(self):
 
@@ -859,9 +831,8 @@ class ADflowWriteSolution(ExplicitComponent, AeroProblemMixIns):
 
         self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
         self.add_input("q", src_indices=np.arange(s1, s2, dtype=int), shape=local_state_size)
-        
-        self.counter = 0 
 
+        self.counter = 0
 
     def compute(self, inputs, outputs):
 
@@ -870,8 +841,9 @@ class ADflowWriteSolution(ExplicitComponent, AeroProblemMixIns):
         self.solver.setStates(inputs["q"])
 
         self.solver.writeSolution(number=self.counter)
-        self.counter += 1 
-        
+        self.counter += 1
+
+
 class AdflowGroup(SharedObjGroup):
     def initialize(self):
         super().initialize()
@@ -914,7 +886,6 @@ class AdflowGroup(SharedObjGroup):
         self.group_options.update(self.options["group_options"])
 
         if self.group_options["mesh"] and self.group_options["deformer"] and not self.group_options["geo_disp"]:
-            # import ipdb; ipdb.set_trace()
             self.connect("Xsurf_allWalls", "x_a")
 
         # if you wanted to check that the user gave a valid combination of components (solver, mesh, ect)
@@ -925,13 +896,16 @@ class AdflowGroup(SharedObjGroup):
                 if comp_name in ["mesh", "geo_disp", "deformer"]:
                     comp = self.group_components[comp_name]()
                 elif comp_name == "solver":
-                    comp = self.group_components[comp_name](aero_problem=self.options["aero_problem"],
-                                                            BCDesVar=self.options["BCDesVar"])
+                    comp = self.group_components[comp_name](
+                        aero_problem=self.options["aero_problem"], BCDesVar=self.options["BCDesVar"]
+                    )
                 elif comp_name == "funcs":
-                    comp = self.group_components[comp_name](aero_problem=self.options["aero_problem"],
-                                                            BCDesVar=self.options["BCDesVar"],
-                                                            forces=self.options['forces'],
-                                                            heatxfer=self.options["heatxfer"])
+                    comp = self.group_components[comp_name](
+                        aero_problem=self.options["aero_problem"],
+                        BCDesVar=self.options["BCDesVar"],
+                        forces=self.options["forces"],
+                        heatxfer=self.options["heatxfer"],
+                    )
 
                 self.add_subsystem(comp_name, comp, promotes=["*"])
                 #  we can connect things implicitly through promotes

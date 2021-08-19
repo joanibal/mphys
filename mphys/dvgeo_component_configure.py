@@ -197,7 +197,8 @@ class DVGeoComp(om.ExplicitComponent):
             pts = pts.reshape(pts.size//3, 3)
             
             self.DVGeo.addPointSet(pts, 'pt_set', eps=1e-10, recompute=False)
-            #HACK: 
+            print('added point set', self.name)
+            #HACK: to insure all of the conduction points are projected into the child FFD 
             if self.name == 'dvgeo_cond':    
                 # for i in np.arange(pts.shape[0]):
                     # if not i in self.DVGeo.children[0].FFD.embededVolumes['pt_set'].mask:

@@ -115,9 +115,10 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
 
         # print('-------------------------------------------------------')
         # print('avg temp in', np.mean(np.array(temp_cond)), 'out', np.mean(np.array(temp_conv)))
+        # print('sum temp in', np.sum(np.array(temp_cond)), 'out', np.sum(np.array(temp_conv)))
         # print('-------------------------------------------------------')
-        # print('temp_conv')
-        # print(temp_conv)
+        # print('temp_conv', temp_conv.size)
+        # print('temp_cond', temp_cond.size)
 
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
