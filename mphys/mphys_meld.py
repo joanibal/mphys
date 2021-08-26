@@ -102,6 +102,22 @@ class MELDThermal_temp_xfer(om.ExplicitComponent):
             self.meldThermal.setStructNodes(x_cond0)
             self.meldThermal.setAeroNodes(x_conv0)
 
+            # import matplotlib.pyplot as plt
+            # from mpl_toolkits.mplot3d import Axes3D
+            # x_cond0 = x_cond0.reshape((-1,3))
+            # x_conv0 = x_conv0.reshape((-1,3))
+            # # plt.plot(x_cond0[:,2],x_cond0[:,1],'o')
+            # # plt.plot(x_conv0[:,2],x_conv0[:,1],'o')
+
+            # fig = plt.figure()
+            # ax = Axes3D(fig)
+
+            # ax.scatter(x_cond0[:,0],x_cond0[:,1],x_cond0[:,2], c='b', marker='o')
+            # plt.axis('equal')
+            # plt.show()
+
+            
+            
             self.meldThermal.initialize()
             self.initialized_meld = True
             print('-------------------------------------------------------')
@@ -208,7 +224,7 @@ class MELDThermal_heatflux_xfer(om.ExplicitComponent):
         self.add_input('x_conv0', shape_by_conn=True, desc='initial aerodynamic surface node coordinates')
 
         self.add_input('heatflux_conv', shape_by_conn=True, desc='initial conv heat transfer rate')
-        self.add_output('heatflux_cond', shape_by_conn=True , val=-1, desc='heat transfer rate on the conduction mesh at the interface')
+        self.add_output('heatflux_cond', shape_by_conn=True , val=0, desc='heat transfer rate on the conduction mesh at the interface')
 
         # outputs
 

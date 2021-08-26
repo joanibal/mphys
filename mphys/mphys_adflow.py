@@ -81,9 +81,12 @@ class AeroProblemMixIns:
         """
         bc_data = CFDSolver.getBCData([famGroup])
         bc_arr = bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup)
-
         ap.setBCVar(BCVar, bc_arr, famGroup)
-        ap.addDV(BCVar, familyGroup=famGroup, name=(BCVar + "_" + famGroup))
+
+        #HACK: make a seperate function to add it as a design variable
+        dv_name = BCVar + "_" + famGroup
+        if dv_name in ap.DVs:
+            ap.addDV(BCVar, familyGroup=famGroup, name=dv_name)
 
         return ap
 
@@ -101,7 +104,6 @@ class AeroProblemMixIns:
 
         ap_vars, _ = get_dvs_and_cons(ap=ap)
         irank = self.comm.rank
-
         if self.comm.rank == 0:
             print("adding ap var inputs")
         for (args, kwargs) in ap_vars:
@@ -119,8 +121,8 @@ class AeroProblemMixIns:
 
             # from mpi4py import MPI
             # if MPI.COMM_WORLD.rank == 0:
-            #     print(s_list)
-            #     print(np.sum(s_list))
+            #     print(name,s_list)
+            #     print(name,np.sum(s_list))
 
             self.add_input(name, val=val, src_indices=src_ind, units=kwargs["units"])
 
@@ -592,22 +594,29 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         # because this routine can be call multiple times back to back in a LBGS self.solver.
         if not self.solver.adjointSetup:
 
-            time_start = time()
-            print(f"setting up adjoint")
-            self.solver._setupAdjoint()
-            time_setup = time() - time_start
-            print(f"adjoint setup took: {time_setup}")
+            if self.comm.rank == 0:
+                print("setting up adjoint")
+                time_start = time()
 
-        print(f"solving adjoint")
-        time_start = time()
+            self.solver._setupAdjoint()
+
+            if self.comm.rank == 0:
+                time_setup = time() - time_start
+                print(f"adjoint setup took: {time_setup}")
+
+        if self.comm.rank == 0:
+            print("solving adjoint")
+            time_start = time()
+
         if mode == "fwd":
             d_outputs["q"] += self.solver.solveDirectForRHS(d_residuals["q"])
         elif mode == "rev":
             RHS = copy.deepcopy(d_outputs["q"])
             self.solver.adflow.adjointapi.solveadjoint(RHS, d_residuals["q"], True)
 
-        time_solve = time() - time_start
-        print(f"adjoint solve took: {time_solve}")
+        if self.comm.rank == 0:
+            time_solve = time() - time_start
+            print(f"adjoint solve took: {time_solve}")
 
         return True, 0, 0
 

@@ -837,8 +837,6 @@ class TacsFunctions(om.ExplicitComponent):
 
         outputs['f_struct'] = self.tacs.evalFunctions(self.func_list)
         
-        print('== tacs functions == ', outputs['f_struct'])
-        
     def compute_jacvec_product(self,inputs, d_inputs, d_outputs, mode):
         if mode == 'fwd':
             if self.check_partials:
@@ -882,39 +880,29 @@ class TacsMass(om.ExplicitComponent):
           => func_list, tacs, struct_ndv = tacs_func_setup(comm)
     """
     def initialize(self):
-        self.options.declare('solver_options')
         self.options.declare('check_partials', default=False)
 
         self.options['distributed'] = True
 
+        self.options.declare("obj_builders", default={TacsObjsBuilder: None}, recordable=False)
+        
         self.ans = None
         self.tacs = None
 
         self.mass = False
-
-        self.objBuilders = [TacsObjsBuilder()]
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        for b in self.objBuilders:
-            b.options = self.options['solver_options']
+        self.options.declare("elem_dv", default= False)
 
 
     def setup(self):
         self.check_partials = self.options['check_partials']
 
-        for b in self.objBuilders:
-            if b.obj is None:
-                b.obj = b.build_obj(self.comm)
+        tacs_objs =  self.options["obj_builders"][TacsObjsBuilder].get_obj(self.comm)
 
         # TACS assembler setup
-        self.mesh      = self.objBuilders[0].obj.mesh
-        self.tacs      = self.objBuilders[0].obj.assembler
+        self.tacs      = tacs_objs.assembler
+        self.mesh      = tacs_objs.mesh
 
         self.ndv = ndv = self.mesh.getNumComponents()
-
-        # crea
 
         self.xpt_sens = self.tacs.createNodeVec()
         node_size = self.xpt_sens.getArray().size
@@ -926,11 +914,15 @@ class TacsMass(om.ExplicitComponent):
         n2 = np.sum(n_list[:irank+1])
 
         # OpenMDAO part of setup
-        self.add_input('dv_struct', shape=ndv,                                                    desc='tacs design variables')
+        if self.options['elem_dv']:
+            self.add_input('dv_struct', shape=ndv,                                                    desc='tacs design variables')
+            
         self.add_input('x_s0',      shape=node_size,  src_indices=np.arange(n1, n2, dtype=int),   desc='structural node coordinates')
 
         self.add_output('mass', 0.0, desc = 'structural mass')
         #self.declare_partials('mass',['dv_struct','x_s0'])
+        from tacs import functions
+        self.func = functions.StructuralMass(self.tacs)
 
     def _update_internal(self,inputs):
         self.tacs.setDesignVars(np.array(inputs['dv_struct'],dtype=TACS.dtype))
@@ -942,12 +934,10 @@ class TacsMass(om.ExplicitComponent):
         self.tacs.setNodes(xpts)
 
     def compute(self,inputs,outputs):
-        if self.check_partials:
-            self._update_internal(inputs)
+        # if self.check_partials:
+        #     self._update_internal(inputs)
 
-        if 'mass' in outputs:
-            func = functions.StructuralMass(self.tacs)
-            outputs['mass'] = self.tacs.evalFunctions([func])
+        outputs['mass'] = self.tacs.evalFunctions([self.func])
 
     def compute_jacvec_product(self,inputs, d_inputs, d_outputs, mode):
         if mode == 'fwd':

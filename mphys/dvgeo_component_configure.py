@@ -256,7 +256,6 @@ class DVGeoComp(om.ExplicitComponent):
         # only do the computations when we have more than zero entries in d_inputs in the reverse mode
         ni = len(list(d_inputs.keys()))
 
-        # import ipdb; ipdb.set_trace()
         if mode == 'rev' and ni > 0:
             # for ptSetName in self.DVGeo.ptSetNames:
             ptSetName = 'pt_set'
