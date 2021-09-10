@@ -204,6 +204,7 @@ class DVGeoComp(om.ExplicitComponent):
                     # if not i in self.DVGeo.children[0].FFD.embededVolumes['pt_set'].mask:
                         # print(i, self.DVGeo.children[0].FFD.embededVolumes['pt_set'].v[i])
                 self.DVGeo.children[0].FFD.embededVolumes['pt_set'].mask = range(pts.shape[0])
+                self.DVGeo.children[1].FFD.embededVolumes['pt_set'].mask = range(pts.shape[0])
  
             
             if MPI.COMM_WORLD.rank == 0:

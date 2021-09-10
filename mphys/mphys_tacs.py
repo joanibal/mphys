@@ -921,7 +921,12 @@ class TacsMass(om.ExplicitComponent):
 
         self.add_output('mass', 0.0, desc = 'structural mass')
         #self.declare_partials('mass',['dv_struct','x_s0'])
-        from tacs import functions
+        
+        if isinstance(self.xpt_sens.getArray()[0], np.complex):
+            from tacs_cs import functions
+        else :
+            from tacs import functions
+            
         self.func = functions.StructuralMass(self.tacs)
 
     def _update_internal(self,inputs):

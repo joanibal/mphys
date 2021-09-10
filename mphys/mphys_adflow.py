@@ -710,6 +710,10 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
         eval_funcs = [f_name for f_name in self.ap.evalFuncs]
 
         self.solver.evalFunctions(self.ap, funcs, eval_funcs)
+        if self.comm.rank == 0:
+            print("=====================")
+            print("funcs", funcs)
+            print("=====================")
 
         for name in self.ap.evalFuncs:
             f_name = self._get_func_name(name)
@@ -848,7 +852,11 @@ class ADflowWriteSolution(ExplicitComponent, AeroProblemMixIns):
         # Set the warped mesh
         self.solver.adflow.warping.setgrid(inputs["x_g"])
         self.solver.setStates(inputs["q"])
-
+        # for i in range(self.comm.size):
+        #     if self.comm.rank == i:
+        #         print(self.solver.getBCData(["isothermalwall"]))
+        #     self.comm.barrier()
+            
         self.solver.writeSolution(number=self.counter)
         self.counter += 1
 
