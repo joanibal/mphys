@@ -1,3 +1,4 @@
+from fileinput import filename
 import numpy as np
 from tacs import TACS,functions
 
@@ -439,6 +440,7 @@ class TacsFunctions(om.ExplicitComponent):
         self.tacs_assembler = None
         
         self.check_partials = False
+        self.callcounter = 0
 
     def setup(self):
 
@@ -523,7 +525,8 @@ class TacsFunctions(om.ExplicitComponent):
             outputs['func_struct'] = self.tacs_assembler.evalFunctions(self.func_list)
 
         if self.f5_writer is not None:
-            self.f5_writer(self.tacs_assembler)
+            self.f5_writer(self.tacs_assembler, f"tacs_{self.callcounter:03d}_{self.scenario}")
+            self.callcounter += 1
 
     def compute_jacvec_product(self,inputs, d_inputs, d_outputs, mode):
         if mode == 'fwd':
