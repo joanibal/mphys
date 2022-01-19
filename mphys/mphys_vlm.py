@@ -159,8 +159,6 @@ class VlmCoefficients(om.ExplicitComponent):
         self.add_output('C_L', tags=['mphys_result'])
         self.add_output('C_M', tags=['mphys_result'])
         self.add_output('C_D', tags=['mphys_result'])
-        self.add_output('lift', tags=['mphys_result'])
-        self.add_output('drag', tags=['mphys_result'])
 
         self.add_output('lift', tags=['mphys_result'])
         self.add_output('moment', tags=['mphys_result'])
@@ -176,11 +174,6 @@ class VlmCoefficients(om.ExplicitComponent):
         self.declare_partials('C_M','Cp')
         self.declare_partials('C_D','Cp')
         
-        self.declare_partials('lift','x_aero')
-        self.declare_partials('drag','x_aero')
-        self.declare_partials('lift','Cp')
-        self.declare_partials('drag','Cp')
-
         self.declare_partials('lift','aoa')
         self.declare_partials('moment','aoa')
         self.declare_partials('drag','aoa')
@@ -210,7 +203,10 @@ class VlmCoefficients(om.ExplicitComponent):
         self.vlm.complex_step = self.options['complex_step']
         self.vlm.compute_coefficients()
         self.vlm.print_results()
+        # import pdb; pdb.set_trace()
         filename = os.path.join(self.output_dir, f"VLM_output_{self.callcounter:03d}_{self.scenario}.dat")
+        
+        # self.vlm.write_twist(filename)
         self.vlm.write_solution_file(filename)
         self.callcounter += 1
         self.vlm.complex_step = False
@@ -218,8 +214,6 @@ class VlmCoefficients(om.ExplicitComponent):
         outputs['C_L'] = self.vlm.CL
         outputs['C_M'] = self.vlm.CM
         outputs['C_D'] = self.vlm.CD
-        outputs['lift'] = self.vlm.lift
-        outputs['drag'] = self.vlm.drag
 
         outputs['lift'] = self.vlm.lift
         outputs['moment'] = self.vlm.moment
@@ -252,11 +246,6 @@ class VlmCoefficients(om.ExplicitComponent):
         partials['C_M','Cp'] = self.vlm.CM_Cp
         partials['C_D','Cp'] = self.vlm.CD_Cp
         
-        partials['lift','x_aero'] = self.vlm.lift_xa
-        partials['drag','x_aero'] = self.vlm.drag_xa
-        partials['lift','Cp'] = self.vlm.lift_Cp
-        partials['drag','Cp'] = self.vlm.drag_Cp
-
         partials['lift','aoa'] = self.vlm.lift_aoa
         partials['moment','aoa'] = self.vlm.moment_aoa
         partials['drag','aoa'] = self.vlm.drag_aoa
