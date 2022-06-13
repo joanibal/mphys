@@ -9,7 +9,7 @@ from baseclasses import AeroProblem
 from adflow import ADFLOW, ADFLOW_C
 from idwarp import USMesh, USMesh_C
 
-from openmdao.api import Group, ImplicitComponent, ExplicitComponent
+from openmdao.api import Group, ImplicitComponent, ExplicitComponent, AnalysisError
 
 from adflow.om_utils import get_dvs_and_cons
 
@@ -124,7 +124,7 @@ class AeroProblemMixIns:
             #     print(name,s_list)
             #     print(name,np.sum(s_list))
 
-            self.add_input(name, val=val, src_indices=src_ind, units=kwargs["units"])
+            self.add_input(name, val=val, src_indices=src_ind, units=kwargs["units"], distributed=True)
 
     def add_ap_outputs(self, ap, units=None):
         # this is the external function to set the ap to this component
@@ -162,6 +162,8 @@ class AdflowMesh(ExplicitComponent):
     def setup(self):
 
         self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
+
+        self.add_output(f"X_volume",  val=self.solver.mesh.getSolverGrid().flatten(order="C"), desc="volume mesh coordinates")
 
         for famGroup in self.options["family_groups"]:
             coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order="C")
@@ -470,6 +472,8 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
         self.options.declare("aero_problem")
         self.options.declare("BCDesVar", default={})
+        self.options.declare("restart_failed_analysis", default=False)
+        self.options.declare("err_on_convergence_fail", default=False)
 
         self.options["distributed"] = True
 
@@ -485,6 +489,12 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         irank = self.comm.rank
         n1 = np.sum(n_list[:irank])
         n2 = np.sum(n_list[: irank + 1])
+        
+        # flag to keep track if the current solution started from a clean restart,
+        # or it was restarted from the previous converged state.
+        self.cleanRestart = True
+        self.restart_failed_analysis = self.options["restart_failed_analysis"]
+        self.err_on_convergence_fail = self.options["err_on_convergence_fail"]
 
         self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
         self.add_output("q", shape=local_state_size)
@@ -512,6 +522,8 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
 
         # Set the warped mesh
         self.solver.adflow.warping.setgrid(inputs["x_g"])
+        self.solver._updateGeomInfo = True
+        self.solver.updateGeometryInfo(warpMesh=False)
         self.set_ap_design_vars(self.ap, inputs)
 
         # reset the fail flags
@@ -520,6 +532,90 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
 
         self.solver(self.ap, writeSolution=False)
 
+        if self.ap.fatalFail:
+            if self.comm.rank == 0:
+                print("###############################################################")
+                print("# Solve Fatal Fail. Analysis Error")
+                print("###############################################################")
+
+            raise AnalysisError("ADFLOW Solver Fatal Fail")
+
+        if self.ap.solveFailed:
+            if self.restart_failed_analysis:  # the mesh was fine, but it didn't converge
+                # if the previous iteration was already a clean restart, dont try again
+                if self.cleanRestart:
+                    if self.comm.rank == 0:
+                        print("###############################################################")
+                        print("# This was a clean restart. Will not try another one.")
+                        print("###############################################################")
+
+                    # write the solution so that we can diagnose
+                    solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
+                    self.solution_counter += 1
+
+                    if self.analysis_error_on_failure:
+                        solver.resetFlow(ap)
+                        self.cleanRestart = True
+                        raise AnalysisError("ADFLOW Solver Fatal Fail")
+
+                # the previous iteration restarted from another solution, so we can try again
+                # with a re-set flowfield for the initial guess.
+                else:
+                    if self.comm.rank == 0:
+                        print("###############################################################")
+                        print("# Solve Failed, attempting a clean restart!")
+                        print("###############################################################")
+
+                    # write the solution so that we can diagnose
+                    solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
+                    self.solution_counter += 1
+
+                    self.ap.solveFailed = False
+                    self.ap.fatalFail = False
+                    solver.resetFlow(ap)
+                    solver(ap, writeSolution=False)
+
+                    if self.ap.solveFailed or self.ap.fatalFail:  # we tried, but there was no saving it
+                        if self.comm.rank == 0:
+                            print("###############################################################")
+                            print("# Clean Restart failed. There is no saving this one!")
+                            print("###############################################################")
+
+                        # write the solution so that we can diagnose
+                        solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
+                        self.solution_counter += 1
+
+                        if self.analysis_error_on_failure:
+                            # re-set the flow for the next iteration:
+                            solver.resetFlow(ap)
+                            # set the reset flow flag
+                            self.cleanRestart = True
+                            raise AnalysisError("ADFLOW Solver Fatal Fail")
+
+                    # see comment for the same flag below
+                    else:
+                        self.cleanRestart = False
+
+            elif self.err_on_convergence_fail:
+                # the solve failed but we dont want to re-try. We also want to raise an analysis error
+                if self.comm.rank == 0:
+                    print("###############################################################")
+                    print("# Solve Failed, not attempting a clean restart")
+                    print("###############################################################")
+                raise AnalysisError("ADFLOW Solver Fatal Fail")
+
+            else:
+                # the solve failed, but we dont want to restart or raise an error, we will just let this one pass
+                pass
+
+        # solve did not fail, therefore we will re-use this converged flowfield for the next iteration.
+        # change the flag so that if the next iteration fails with current initial guess, it can retry
+        # with a clean restart
+        else:
+            self.cleanRestart = False
+
+        
+        
         outputs["q"] = self.solver.getStates()
 
     def linearize(self, inputs, outputs, residuals):
@@ -612,8 +708,38 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
             d_outputs["q"] += self.solver.solveDirectForRHS(d_residuals["q"])
         elif mode == "rev":
             RHS = copy.deepcopy(d_outputs["q"])
-            self.solver.adflow.adjointapi.solveadjoint(RHS, d_residuals["q"], True)
+            
+            
+            # # use FD to verify the fwd mode is correct
+            # wDot = self.solver.getStatePerturbation(0)
 
+            # resDot = self.solver.computeJacobianVectorProductFwd(
+            #     wDot=wDot, residualDeriv=True
+            # )
+            # resDot_FD = self.solver.computeJacobianVectorProductFwd(wDot=wDot, residualDeriv=True, mode='FD', h=1e-10)
+            
+            # # L2 error
+            # rel_err = np.abs(resDot - resDot_FD)/resDot
+            # print(f"rel_err: {rel_err}, max: {np.max(rel_err)}")
+            
+            # use the dot product test to verify the reverse mode routine
+            wBar = self.solver.computeJacobianVectorProductBwd(resBar=RHS, wDeriv=True)
+            
+            # print('dot product test')
+            # # sum value across all processors mpi
+            # sum1 = self.comm.allreduce(np.sum(wBar*wDot))
+            # sum2 = self.comm.allreduce(np.sum(resDot*RHS))
+            
+            
+            # print('dotproduct:',(sum2- sum1)/sum2)
+        
+            # print('adjoint 0', np.linalg.norm(d_residuals["q"]))
+            
+            self.solver.adflow.adjointapi.solveadjoint(RHS, d_residuals["q"], True)
+            
+            if self.solver.adflow.killsignals.adjointfailed:
+                AnalysisError("ADFLOW adjoint Fatal Fail")
+                
         if self.comm.rank == 0:
             time_solve = time() - time_start
             print(f"adjoint solve took: {time_solve}")
@@ -630,7 +756,6 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
         self.options.declare("heatxfer", default=False)
 
         self.options.declare("obj_builders", default={AdflowObjBuilder: None}, recordable=False)
-        self.options["distributed"] = True
 
         self.func_to_units = {
             "mdot": "kg/s",
@@ -677,8 +802,8 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
         n1 = np.sum(n_list[:irank])
         n2 = np.sum(n_list[: irank + 1])
 
-        self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size)
-        self.add_input("q", src_indices=np.arange(s1, s2, dtype=int), shape=local_state_size)
+        self.add_input("x_g", src_indices=np.arange(n1, n2, dtype=int), shape=local_coord_size, distributed=True)
+        self.add_input("q", src_indices=np.arange(s1, s2, dtype=int), shape=local_state_size, distributed=True)
 
         self.ap = self.options["aero_problem"]
         for BCVar, famGroup in self.options["BCDesVar"].items():
@@ -689,11 +814,11 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
 
         if self.options["forces"]:
             local_surface_coord_size = self.solver._getSurfaceSize(self.solver.allWallsGroup)
-            self.add_output("f_a", shape=local_surface_coord_size)
+            self.add_output("f_a", shape=local_surface_coord_size, distributed=True)
         if self.options["heatxfer"]:
             local_nodes, nCells = self.solver._getSurfaceSize(self.solver.allIsothermalWallsGroup)
 
-            self.add_output("heatflux", val=np.ones(local_nodes) * 0, shape=local_nodes)
+            self.add_output("heatflux", val=np.ones(local_nodes) * 0, shape=local_nodes, distributed=True)
 
     def _get_func_name(self, name):
         return "%s_%s" % (self.ap.name, name.lower())
@@ -703,7 +828,8 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
 
         # Set the warped mesh
         self.solver.adflow.warping.setgrid(inputs["x_g"])
-
+        self.solver._updateGeomInfo = True
+        self.solver.updateGeometryInfo(warpMesh=False)
         self.solver.setStates(inputs["q"])
 
         funcs = {}
@@ -712,7 +838,8 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
         self.solver.evalFunctions(self.ap, funcs, eval_funcs)
         if self.comm.rank == 0:
             print("=====================")
-            print("funcs", funcs)
+            for f_name, f_val in funcs.items():
+                print(f"{f_name}: {f_val}")
             print("=====================")
 
         for name in self.ap.evalFuncs:
@@ -784,8 +911,8 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                 # becasue it causes Adflow to do extra work internally even if you give it extra variables, even if the seed is 0
                 if func_name in d_outputs and d_outputs[func_name] != 0.0:
                     funcsBar[func_name] = (
-                        d_outputs[func_name][0] / self.comm.size
-                    )  # tmp fix while om is changing distibuted vars
+                        d_outputs[func_name][0]
+                    )  
 
             if "f_a" in d_outputs:
                 fBar = d_outputs["f_a"]
