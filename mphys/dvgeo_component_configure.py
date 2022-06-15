@@ -103,7 +103,9 @@ class DVGeoComp(om.ExplicitComponent):
         dvs = self.DVGeo.getValues()
 
         for key, val in dvs.items():
-            print("adding", key, val.size)
+            if self.comm.rank == 0:
+                print("adding", key)
+                
             self.add_input(key, val=val.real)
 
         self.add_output("deformed_pts", copy_shape="pts", distributed=True)
@@ -166,8 +168,9 @@ class DVGeoComp(om.ExplicitComponent):
 
             # loop over linear contraints
             for conName, con in self.DVCon.linearCon.items():
-
-                print(f"for conName {conName}, adding {con.name} with size {con.ncon}")
+                if self.comm.rank == 0:
+                    print(f"for conName '{conName}', adding {con.name} with size {con.ncon}")
+                    
                 self.add_output(con.name, shape=con.ncon)
 
             for con_type, cons in self.DVCon.constraints.items():

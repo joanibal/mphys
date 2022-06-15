@@ -119,10 +119,6 @@ class AeroProblemMixIns:
             s2 = np.sum(s_list[: irank + 1])
             src_ind = np.arange(s1, s2, dtype=int)
 
-            # from mpi4py import MPI
-            # if MPI.COMM_WORLD.rank == 0:
-            #     print(name,s_list)
-            #     print(name,np.sum(s_list))
 
             self.add_input(name, val=val, src_indices=src_ind, units=kwargs["units"], distributed=True)
 
@@ -301,7 +297,6 @@ class AdflowNonUniqueMapper(ExplicitComponent):
             outputs["val_nonuniq"] = coords.flatten()
         else:
             outputs["val_nonuniq"] = inputs["val_uniq"][self.mapping]
-            # print(outputs["val_nonuniq"])
 
 
 class AdflowUniqueMapper(ExplicitComponent):
@@ -710,30 +705,10 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
             RHS = copy.deepcopy(d_outputs["q"])
             
             
-            # # use FD to verify the fwd mode is correct
-            # wDot = self.solver.getStatePerturbation(0)
-
-            # resDot = self.solver.computeJacobianVectorProductFwd(
-            #     wDot=wDot, residualDeriv=True
-            # )
-            # resDot_FD = self.solver.computeJacobianVectorProductFwd(wDot=wDot, residualDeriv=True, mode='FD', h=1e-10)
-            
-            # # L2 error
-            # rel_err = np.abs(resDot - resDot_FD)/resDot
-            # print(f"rel_err: {rel_err}, max: {np.max(rel_err)}")
             
             # use the dot product test to verify the reverse mode routine
             wBar = self.solver.computeJacobianVectorProductBwd(resBar=RHS, wDeriv=True)
             
-            # print('dot product test')
-            # # sum value across all processors mpi
-            # sum1 = self.comm.allreduce(np.sum(wBar*wDot))
-            # sum2 = self.comm.allreduce(np.sum(resDot*RHS))
-            
-            
-            # print('dotproduct:',(sum2- sum1)/sum2)
-        
-            # print('adjoint 0', np.linalg.norm(d_residuals["q"]))
             
             self.solver.adflow.adjointapi.solveadjoint(RHS, d_residuals["q"], True)
             
@@ -979,10 +954,6 @@ class ADflowWriteSolution(ExplicitComponent, AeroProblemMixIns):
         # Set the warped mesh
         self.solver.adflow.warping.setgrid(inputs["x_g"])
         self.solver.setStates(inputs["q"])
-        # for i in range(self.comm.size):
-        #     if self.comm.rank == i:
-        #         print(self.solver.getBCData(["isothermalwall"]))
-        #     self.comm.barrier()
             
         self.solver.writeSolution(number=self.counter)
         self.counter += 1
