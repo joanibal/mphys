@@ -83,7 +83,7 @@ class AeroProblemMixIns:
         bc_arr = bc_data.getBCArraysFlatData(BCVar, familyGroup=famGroup)
         ap.setBCVar(BCVar, bc_arr, famGroup)
 
-        #HACK: make a seperate function to add it as a design variable
+        # HACK: make a seperate function to add it as a design variable
         dv_name = BCVar + "_" + famGroup
         if dv_name in ap.DVs:
             ap.addDV(BCVar, familyGroup=famGroup, name=dv_name)
@@ -118,7 +118,6 @@ class AeroProblemMixIns:
             s1 = np.sum(s_list[:irank])
             s2 = np.sum(s_list[: irank + 1])
             src_ind = np.arange(s1, s2, dtype=int)
-
 
             self.add_input(name, val=val, src_indices=src_ind, units=kwargs["units"], distributed=True)
 
@@ -159,7 +158,9 @@ class AdflowMesh(ExplicitComponent):
 
         self.solver = self.options["obj_builders"][AdflowObjBuilder].get_obj(self.comm)
 
-        self.add_output(f"X_volume",  val=self.solver.mesh.getSolverGrid().flatten(order="C"), desc="volume mesh coordinates")
+        self.add_output(
+            "X_volume", val=self.solver.mesh.getSolverGrid().flatten(order="C"), desc="volume mesh coordinates"
+        )
 
         for famGroup in self.options["family_groups"]:
             coords = self.solver.getSurfaceCoordinates(groupName=famGroup).flatten(order="C")
@@ -484,7 +485,7 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         irank = self.comm.rank
         n1 = np.sum(n_list[:irank])
         n2 = np.sum(n_list[: irank + 1])
-        
+
         # flag to keep track if the current solution started from a clean restart,
         # or it was restarted from the previous converged state.
         self.cleanRestart = True
@@ -545,11 +546,11 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
                         print("###############################################################")
 
                     # write the solution so that we can diagnose
-                    solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
+                    self.solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
                     self.solution_counter += 1
 
                     if self.analysis_error_on_failure:
-                        solver.resetFlow(ap)
+                        self.solver.resetFlow(self.ap)
                         self.cleanRestart = True
                         raise AnalysisError("ADFLOW Solver Fatal Fail")
 
@@ -562,13 +563,13 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
                         print("###############################################################")
 
                     # write the solution so that we can diagnose
-                    solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
+                    self.solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
                     self.solution_counter += 1
 
                     self.ap.solveFailed = False
                     self.ap.fatalFail = False
-                    solver.resetFlow(ap)
-                    solver(ap, writeSolution=False)
+                    self.solver.resetFlow(self.ap)
+                    self.solver(self.ap, writeSolution=False)
 
                     if self.ap.solveFailed or self.ap.fatalFail:  # we tried, but there was no saving it
                         if self.comm.rank == 0:
@@ -577,12 +578,12 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
                             print("###############################################################")
 
                         # write the solution so that we can diagnose
-                        solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
+                        self.solver.writeSolution(baseName="analysis_fail", number=self.solution_counter)
                         self.solution_counter += 1
 
                         if self.analysis_error_on_failure:
                             # re-set the flow for the next iteration:
-                            solver.resetFlow(ap)
+                            self.solver.resetFlow(self.ap)
                             # set the reset flow flag
                             self.cleanRestart = True
                             raise AnalysisError("ADFLOW Solver Fatal Fail")
@@ -609,8 +610,6 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
         else:
             self.cleanRestart = False
 
-        
-        
         outputs["q"] = self.solver.getStates()
 
     def linearize(self, inputs, outputs, residuals):
@@ -703,18 +702,12 @@ class AdflowSolver(ImplicitComponent, AeroProblemMixIns):
             d_outputs["q"] += self.solver.solveDirectForRHS(d_residuals["q"])
         elif mode == "rev":
             RHS = copy.deepcopy(d_outputs["q"])
-            
-            
-            
-            # use the dot product test to verify the reverse mode routine
-            wBar = self.solver.computeJacobianVectorProductBwd(resBar=RHS, wDeriv=True)
-            
-            
+
             self.solver.adflow.adjointapi.solveadjoint(RHS, d_residuals["q"], True)
-            
+
             if self.solver.adflow.killsignals.adjointfailed:
                 AnalysisError("ADFLOW adjoint Fatal Fail")
-                
+
         if self.comm.rank == 0:
             time_solve = time() - time_start
             print(f"adjoint solve took: {time_solve}")
@@ -885,9 +878,7 @@ class AdflowFunctions(ExplicitComponent, AeroProblemMixIns):
                 # we have to check for 0 here, so we don't include any unnecessary variables in funcsBar
                 # becasue it causes Adflow to do extra work internally even if you give it extra variables, even if the seed is 0
                 if func_name in d_outputs and d_outputs[func_name] != 0.0:
-                    funcsBar[func_name] = (
-                        d_outputs[func_name][0]
-                    )  
+                    funcsBar[func_name] = d_outputs[func_name][0]
 
             if "f_a" in d_outputs:
                 fBar = d_outputs["f_a"]
@@ -954,7 +945,7 @@ class ADflowWriteSolution(ExplicitComponent, AeroProblemMixIns):
         # Set the warped mesh
         self.solver.adflow.warping.setgrid(inputs["x_g"])
         self.solver.setStates(inputs["q"])
-            
+
         self.solver.writeSolution(number=self.counter)
         self.counter += 1
 

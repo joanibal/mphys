@@ -105,7 +105,7 @@ class DVGeoComp(om.ExplicitComponent):
         for key, val in dvs.items():
             if self.comm.rank == 0:
                 print("adding", key)
-                
+
             self.add_input(key, val=val.real)
 
         self.add_output("deformed_pts", copy_shape="pts", distributed=True)
@@ -170,7 +170,7 @@ class DVGeoComp(om.ExplicitComponent):
             for conName, con in self.DVCon.linearCon.items():
                 if self.comm.rank == 0:
                     print(f"for conName '{conName}', adding {con.name} with size {con.ncon}")
-                    
+
                 self.add_output(con.name, shape=con.ncon)
 
             for con_type, cons in self.DVCon.constraints.items():
@@ -247,7 +247,6 @@ class DVGeoComp(om.ExplicitComponent):
         # we ran a compute so the inputs changed. update the dvcon jac
         # next time the jacvec product routine is called
         self.update_jac = True
-        
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
         # only do the computations when we have more than zero entries in d_inputs in the reverse mode
@@ -256,7 +255,7 @@ class DVGeoComp(om.ExplicitComponent):
         if mode == "rev" and ni > 0:
             # for ptSetName in self.DVGeo.ptSetNames:
             ptSetName = "pt_set"
-            
+
             # only do the calc. if d_output is not zero on ANY proc
             local_all_zeros = np.all(d_outputs["deformed_pts"] == 0)
             global_all_zeros = np.zeros(1, dtype=bool)
@@ -267,7 +266,7 @@ class DVGeoComp(om.ExplicitComponent):
                 dout = d_outputs["deformed_pts"].reshape(len(d_outputs["deformed_pts"]) // 3, 3)
 
                 xdot = self.DVGeo.totalSensitivity(dout, ptSetName, comm=self.comm)  # this has an all reduce inside
-                
+
                 # loop over dvs and accumulate
                 for k in xdot:
                     # check if this dv is present

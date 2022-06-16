@@ -1,12 +1,13 @@
 from __future__ import division, print_function
 
+
 class solver_builder(object):
     """
     MPHYS builder base class. Template for developers to create their builders.
     """
 
     def __init__(self, options):
-        '''
+        """
         Initialization routine for the solver builder. This is called by the user in the
         main runscript. The input parameters presented here are not strictly required by
         the mphys api, but they are a good starting point. This is because the user
@@ -18,11 +19,11 @@ class solver_builder(object):
         options : dictionary
             A dictionary containing all the options the user wants to pass to the
             solver object.
-        '''
+        """
         pass
 
     def init_solver(self, comm):
-        '''
+        """
         The method that initializes the python objects required for the solver.
 
         Parameters
@@ -30,11 +31,11 @@ class solver_builder(object):
         comm : mpi communicator
             The communicator object created for this xfer object instance.
 
-        '''
+        """
         pass
 
     def get_element(self, **kwargs):
-        '''
+        """
         Method that returns the openmdao element for this solver
 
         Parameters
@@ -52,11 +53,11 @@ class solver_builder(object):
             The openmdao element that handles all the computations for
             this solver. This group needs to comply with the MPHYS API
             with the i/o it provides to couple additional physics.
-        '''
+        """
         pass
 
     def get_mesh_element(self):
-        '''
+        """
         Method that returns the mesh element for this solver. This method
         is subject to change; however, currently the mesh element it returns
         is connected to the every flight condition that is created using this builder
@@ -68,14 +69,13 @@ class solver_builder(object):
             for this solver. For an aerodynamic or structural solver examples, these
             coordinates are the undeflected shape, and they can be used in the context
             of a geometry manipulation routine.
-        '''
+        """
         pass
 
 
 class xfer_builder(object):
-
     def __init__(self, options, aero_builder, struct_builder):
-        '''
+        """
         Initialization routine for the xfer builder. This is called by the user in the
         main runscript. This method simply saves the options and the two other solver
         builders that this xfer object will connect. The input parameters we present
@@ -92,11 +92,11 @@ class xfer_builder(object):
             This is the builder for the aero solver this scheme couples
         struct_builder : solver_builder
             This is the builder for the struct solver this scheme couples
-        '''
+        """
         pass
 
     def init_xfer_object(self, comm):
-        '''
+        """
         The method that initializes the python objects required for the transfer scheme.
         In this method, the xfer builder can make calls to the aero and struct builders
         that are not in the mphys API. E.g. the developers can implement custom methods
@@ -108,11 +108,11 @@ class xfer_builder(object):
         comm : mpi communicator
             The communicator object created for this xfer object instance.
 
-        '''
+        """
         pass
 
     def get_element(self):
-        '''
+        """
         Method that returns the openmdao elements for the xfer scheme.
         Unlike the get_element methods for a solver_builder, this method returns
         two elements, e.g. one for transfering the displacements and one for
@@ -126,5 +126,5 @@ class xfer_builder(object):
         load_xfer : Openmdao component (or group)
             The openmdao "element" that is  responsible from propagating the loads
             from the aero solver to the struct solver
-        '''
+        """
         pass

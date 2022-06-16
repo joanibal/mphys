@@ -5,7 +5,7 @@
 #      this is a base class intended to be used to create derived classes
 #      which are builders for particular solvers
 
-#      All of the abstract methods listed below must be implemented in any 
+#      All of the abstract methods listed below must be implemented in any
 #      derived classes
 #     """
 
@@ -31,20 +31,19 @@
 
 class Builder(object):
     """
-     this is a base class intended to be used to create derived classes
-     which are builders for particular solvers
+    this is a base class intended to be used to create derived classes
+    which are builders for particular solvers
 
-     All of the abstract methods listed below must be implemented in any 
-     derived classes
+    All of the abstract methods listed below must be implemented in any
+    derived classes
     """
 
-
     def __init__(self, options):
-         self.options = options
-         self.object_built = False
+        self.options = options
+        self.object_built = False
 
     def build_object(self, comm):
-        """ contracts solver/transfer scheme/etc using provided comm which
+        """contracts solver/transfer scheme/etc using provided comm which
         entails the allocation of memory for any computation"""
         pass
 
@@ -53,4 +52,3 @@ class Builder(object):
 
     def get_component(self, **kwargs):
         pass
-
