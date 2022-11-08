@@ -190,7 +190,7 @@ class DVGeoComp(om.ExplicitComponent):
             pts = inputs["pts"]
             pts = pts.reshape(pts.size // 3, 3)
 
-            self.DVGeo.addPointSet(pts, "pt_set", eps=1e-10)
+            self.DVGeo.addPointSet(pts, "pt_set", eps=1e-10, nIter=2000)
 
             # HACK: to insure all of the conduction points are projected into the child FFD
             if self.name == "dvgeo_cond":
