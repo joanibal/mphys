@@ -11,7 +11,7 @@ from idwarp import USMesh, USMesh_C
 
 from openmdao.api import Group, ImplicitComponent, ExplicitComponent, AnalysisError
 
-from adflow.om_utils import get_dvs_and_cons
+from adflow.mphys.om_utils import get_dvs_and_cons
 
 from .base_classes import ObjBuilder, SysBuilder
 from .analysis import Analysis, SharedObjGroup
